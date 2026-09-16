@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Teste PIN pad Gertec PPC930</title>
+<style>
+  :root{
+    --bg:#0f1115; --card:#181b22; --line:#272b35; --fg:#e8eaf0; --mut:#9aa3b2;
+    --ok:#22c55e; --bad:#ef4444; --warn:#f59e0b; --acc:#3b82f6;
+  }
+  *{box-sizing:border-box}
+  body{background:var(--bg);color:var(--fg);
+       font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+       padding:16px 14px 40px;max-width:760px;margin:0 auto}
+  h1{font-size:19px;margin:0 0 2px}
+  h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:0 0 8px}
+  .sub{color:var(--mut);font-size:12.5px;margin:0 0 16px;font-family:ui-monospace,Consolas,monospace}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:14px;margin-bottom:12px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  .row + .row{margin-top:10px}
+  button{flex:1 1 auto;min-height:46px;padding:10px 14px;border-radius:11px;border:1px solid var(--line);
+         background:#212633;color:var(--fg);font-size:15px;font-weight:600;cursor:pointer}
+  button:active{transform:translateY(1px)}
+  button:disabled{opacity:.45;cursor:not-allowed}
+  button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  input[type=text]{flex:1 1 140px;min-height:46px;padding:10px 12px;border-radius:11px;border:1px solid var(--line);
+        background:#0c0e13;color:var(--fg);font-size:15px;font-family:ui-monospace,Consolas,monospace}
+  select{min-height:46px;padding:10px 12px;border-radius:11px;border:1px solid var(--line);
+         background:#0c0e13;color:var(--fg);font-size:14px}
+  .chk{display:flex;gap:8px;align-items:center;color:var(--mut);font-size:13px;margin-top:10px}
+  .chk input{width:18px;height:18px}
+  #dev{font-size:13px;color:var(--mut);margin-top:10px;font-family:ui-monospace,Consolas,monospace;word-break:break-all}
+  #verdict{font-size:16px;font-weight:700;padding:12px 14px;border-radius:12px;border:1px solid var(--line);
+           background:#12151c;color:var(--mut);text-align:center}
+  #verdict.ok{background:rgba(34,197,94,.12);border-color:var(--ok);color:var(--ok)}
+  #verdict.bad{background:rgba(239,68,68,.12);border-color:var(--bad);color:var(--bad)}
+  #verdict.warn{background:rgba(245,158,11,.12);border-color:var(--warn);color:var(--warn)}
+  pre#log{margin:0;max-height:46vh;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+  .L{color:var(--mut)} .S{color:var(--acc)} .G{color:var(--ok)} .R{color:var(--bad)} .Y{color:var(--warn)}
+</style>
+</head>
+<body>
+
+<h1>Teste PIN pad Gertec PPC930</h1>
+<p class="sub">STX | LEN | CMD(5) | 0x1D | DADOS | ETX | XOR(STX..ETX)</p>
+
+<div class="card">
+  <div class="row">
+    <select id="selTransport">
+      <option value="auto">Automático (serial no PC · USB no celular)</option>
+      <option value="serial">Porta serial / COM (Web Serial)</option>
+      <option value="usb">USB direto (WebUSB)</option>
+    </select>
+  </div>
+  <div class="row">
+    <button id="btnConnect" class="primary">1 · Conectar PIN pad</button>
+    <button id="btnDisconnect" disabled>Desconectar</button>
+  </div>
+  <label class="chk"><input type="checkbox" id="chkAll"> no USB, listar todos os dispositivos (se o PPC930 não aparecer)</label>
+  <div id="dev">desconectado</div>
+</div>
+
+<div class="card">
+  <h2>Testes</h2>
+  <div class="row">
+    <input type="text" id="txtMsg" value="PINPAD OK" maxlength="16" autocapitalize="characters" spellcheck="false">
+    <button id="btnDisplay" disabled>2 · Enviar ao display</button>
+  </div>
+  <div class="row">
+    <button id="btnSelf" disabled>3 · Teste completo (ACK / NAK)</button>
+  </div>
+  <div class="row" style="margin-top:12px"><div id="verdict">sem conexão</div></div>
+</div>
+
+<div class="card">
+  <h2>Log</h2>
+  <pre id="log"></pre>
+</div>
+
+<script>
+"use strict";
+const VID = 0x1753, PID = 0xC902;      // Gertec PPC930 Pinpad Terminal
+const ACK = 0x06, NAK = 0x15;
+const $ = id => document.getElementById(id);
+const logEl = $("log"), verdictEl = $("verdict");
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+const hex = u8 => [...u8].map(b => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
+const h16 = n => (n || 0).toString(16).toUpperCase();
+const stamp = () => new Date().toLocaleTimeString("pt-BR", {hour12:false});
+function log(msg, cls = "L") {
+  const line = document.createElement("div");
+  line.className = cls;
+  line.textContent = "[" + stamp() + "] " + msg;
+  logEl.appendChild(line);
+  logEl.scrollTop = logEl.scrollHeight;
+}
+function verdict(text, cls = "") { verdictEl.textContent = text; verdictEl.className = cls; }
+
+/* ---------- protocolo Gertec ---------- */
+function frame(cmd5, dados) {
+  if (cmd5.length !== 5) throw new Error("comando deve ter 5 caracteres");
+  const enc = new TextEncoder();
+  const mid = [...enc.encode(cmd5), 0x1D, ...enc.encode(dados), 0x03];
+  const f = [0x02, 1 + 1 + mid.length + 1, ...mid];
+  let x = 0; for (const b of f) x ^= b;
+  f.push(x);
+  return new Uint8Array(f);
+}
+function frameComChecksumErrado(cmd5, dados) {
+  const f = frame(cmd5, dados);
+  f[f.length - 1] ^= 0xFF;
+  return f;
+}
+function decodeResp(r) {
+  if (r.length === 0) return "sem resposta";
+  if (r.length === 1 && r[0] === ACK) return "ACK (06) - aceito";
+  if (r.length === 1 && r[0] === NAK) return "NAK (15) - rejeitado";
+  return "resposta " + hex(r);
+}
+
+/* ---------- estado do transporte ---------- */
+let modo = null;                 // "serial" | "usb"
+let dev = null, epIn = null, epOut = null, iface = null;   // WebUSB
+let port = null, writer = null, reader = null, rxBuf = [];  // Web Serial
+
+function uiConectado(detalhe) {
+  $("dev").textContent = detalhe;
+  $("btnDisplay").disabled = $("btnSelf").disabled = $("btnDisconnect").disabled = false;
+  $("btnConnect").disabled = true;
+  $("selTransport").disabled = true;
+  log("conectado: " + detalhe, "G");
+  verdict("conectado - pronto para testar", "");
+}
+function uiDesconectado() {
+  modo = null; dev = null; epIn = epOut = null; iface = null;
+  port = null; writer = null; reader = null; rxBuf = [];
+  $("btnDisplay").disabled = $("btnSelf").disabled = $("btnDisconnect").disabled = true;
+  $("btnConnect").disabled = false;
+  $("selTransport").disabled = false;
+  $("dev").textContent = "desconectado";
+}
+function mensagemErro(e) {
+  const msg = String(e && e.message ? e.message : e);
+  if (/access denied/i.test(msg))
+    return msg + " — no Windows o pinpad fica preso ao driver da porta COM; use o modo serial (Web Serial). No Android use USB com adaptador OTG.";
+  if (/claim/i.test(msg))
+    return msg + " — feche outros apps/programas que estejam usando a porta do pinpad e tente de novo.";
+  if (/No port selected|No device selected|user cancelled|cancel/i.test(msg))
+    return msg + " — nenhum dispositivo escolhido na lista.";
+  if (/Failed to open serial port|Access denied to the port|NetworkError/i.test(msg))
+    return msg + " — a porta está em uso por outro programa (feche o app Gertec / monitores seriais).";
+  return msg;
+}
+
+/* ---------- Web Serial (PC) ---------- */
+async function abrirSerial() {
+  log("escolha a porta do pinpad na lista do navegador…", "S");
+  port = await navigator.serial.requestPort();
+  await port.open({ baudRate: 19200, dataBits: 8, parity: "none", stopBits: 1, flowControl: "none" });
+  writer = port.writable.getWriter();
+  reader = port.readable.getReader();
+  rxBuf = [];
+  (async () => {
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value && value.length) rxBuf.push(...value);
+      }
+    } catch (e) { log("leitura serial encerrada: " + (e.message || e), "Y"); }
+  })();
+  modo = "serial";
+  await sleep(800);
+  if (rxBuf.length) { log(`descartando ${rxBuf.length} byte(s) de inicialização da porta`, "Y"); rxBuf = []; }
+  const i = port.getInfo();
+  uiConectado(`serial · ${i.usbVendorId ? "USB " + h16(i.usbVendorId) + ":" + h16(i.usbProductId) : "porta do sistema"} · 19200 8N1`);
+}
+
+/* ---------- WebUSB (Android) ---------- */
+async function abrirUSB() {
+  log("abrindo seletor de dispositivos USB…", "S");
+  dev = await navigator.usb.requestDevice({ filters: $("chkAll").checked ? [] : [{ vendorId: VID, productId: PID }] });
+  const idDev = `${dev.manufacturerName || "?"} · ${dev.productName || "?"} · VID ${h16(dev.vendorId)} PID ${h16(dev.productId)}`;
+  log("dispositivo selecionado: " + idDev, "G");
+  $("dev").textContent = idDev + " · abrindo…";
+  await dev.open();
+  if (dev.configuration === null) await dev.selectConfiguration(1);
+
+  let pick = null;
+  for (const itf of dev.configuration.interfaces) {
+    const eps = itf.alternates[0].endpoints;
+    const out = eps.find(e => e.direction === "out" && e.type === "bulk");
+    const inp = eps.find(e => e.direction === "in"  && e.type === "bulk");
+    if (out && inp) { pick = { num: itf.interfaceNumber, out, inp }; break; }
+  }
+  if (!pick) throw new Error("nenhuma interface com endpoints bulk neste dispositivo");
+  await dev.claimInterface(pick.num);
+  iface = pick.num; epOut = pick.out; epIn = pick.inp;
+
+  try { await dev.controlTransferOut({ requestType:"class", recipient:"interface", request:0x20, value:0, index:iface },
+                                      new Uint8Array([0x00, 0x4B, 0, 0, 0, 0, 8])); } catch (e) {}
+  try { await dev.controlTransferOut({ requestType:"class", recipient:"interface", request:0x22, value:0x03, index:iface }); } catch (e) {}
+  try { await dev.controlTransferOut({ requestType:"standard", recipient:"endpoint", request:0x01, value:0, index:epOut.endpointNumber }); } catch (e) {}
+
+  modo = "usb";
+  uiConectado(`${idDev} · iface ${iface} · ep ${epOut.endpointNumber}/${epIn.endpointNumber}`);
+}
+
+async function conectar() {
+  const pref = $("selTransport").value;
+  const escolhido = pref === "auto" ? (navigator.serial ? "serial" : "usb") : pref;
+  try {
+    if (escolhido === "serial") {
+      if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador");
+      await abrirSerial();
+    } else {
+      if (!navigator.usb) throw new Error("WebUSB indisponível neste navegador");
+      await abrirUSB();
+    }
+  } catch (e) {
+    uiDesconectado();
+    const msg = mensagemErro(e);
+    log("falha ao conectar: " + msg, "R");
+    verdict("falha na conexão: " + msg, "bad");
+  }
+}
+
+async function desconectar() {
+  try {
+    if (modo === "usb" && dev) {
+      if (iface !== null) await dev.releaseInterface(iface);
+      if (dev.opened) await dev.close();
+    }
+    if (modo === "serial" && port) {
+      try { if (reader) await reader.cancel(); } catch (e) {}
+      try { if (writer) writer.releaseLock(); } catch (e) {}
+      await port.close();
+    }
+  } catch (e) { log("erro ao fechar: " + (e.message || e), "Y"); }
+  uiDesconectado();
+  verdict("sem conexão", "");
+  log("desconectado.");
+}
+
+/* ---------- envio / recepção ---------- */
+async function lerUSB(timeoutMs = 900) {
+  const out = [];
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    try {
+      const r = await dev.bulkTransferIn(epIn.endpointNumber, 64, Math.max(60, timeoutMs - (performance.now() - t0)));
+      if (r.status === "ok" && r.data && r.data.length) out.push(...r.data);
+      else break;
+    } catch (e) { break; }
+  }
+  return new Uint8Array(out);
+}
+async function lerSerial(timeoutMs = 900) {
+  const t0 = performance.now();
+  while (rxBuf.length === 0 && performance.now() - t0 < timeoutMs) await sleep(25);
+  const out = rxBuf.splice(0);
+  return new Uint8Array(out);
+}
+const ler = (ms = 1200) => (modo === "usb" ? lerUSB(ms) : lerSerial(ms));
+
+async function enviar(f, rotulo) {
+  log("→ " + rotulo + " : " + hex(f), "S");
+  if (modo === "usb") {
+    try {
+      await dev.bulkTransferOut(epOut.endpointNumber, f);
+    } catch (e) {
+      log("falha na escrita (" + e.message + ") - limpando stall e tentando de novo", "Y");
+      try { await dev.clearHalt("out", epOut.endpointNumber); } catch (e2) {}
+      await dev.bulkTransferOut(epOut.endpointNumber, f);
+    }
+  } else {
+    await writer.write(f);
+  }
+  const r = await ler();
+  log("← " + decodeResp(r) + (r.length ? "  [" + hex(r) + "]" : ""), r.length ? "G" : "Y");
+  return r;
+}
+
+/* ---------- testes ---------- */
+async function enviarDisplay() {
+  const txt = $("txtMsg").value || "PINPAD OK";
+  const r = await enviar(frame("MK102", txt), `display "${txt}"`);
+  verdict(r.length === 1 && r[0] === ACK
+    ? 'display OK - o LCD do pinpad deve mostrar "' + txt + '"'
+    : "sem ACK ao escrever no display", r.length === 1 && r[0] === ACK ? "ok" : "warn");
+}
+
+async function testeCompleto() {
+  if (!modo) return;
+  const casos = [
+    { nome: "frame válido",             f: frame("MK102", "TESTE OK"),                  espera: ACK },
+    { nome: "checksum corrompido",      f: frameComChecksumErrado("MK102", "TESTE OK"), espera: NAK },
+    { nome: "texto puro (sem framing)", f: new TextEncoder().encode("HELLO WORLD\r\n"), espera: null },
+    { nome: "frame válido novamente",   f: frame("MK102", "PPC930 OK"),                 espera: ACK },
+  ];
+  let ok = 0;
+  rxBuf = [];
+  verdict("executando testes…", "");
+  for (const c of casos) {
+    const r = await enviar(c.f, c.nome);
+    const passou = c.espera === null ? r.length === 0 : (r.length === 1 && r[0] === c.espera);
+    log("   " + (passou ? "PASSOU" : "FALHOU") + " - " + c.nome, passou ? "G" : "R");
+    if (passou) ok++;
+    await sleep(120);
+  }
+  log(`resumo: ${ok}/${casos.length} testes passaram`, ok === casos.length ? "G" : "R");
+  verdict(ok === casos.length ? "PINPAD OK - comunicação, framing e checksum validados"
+        : ok === 0 ? "FALHOU - o pinpad não respondeu"
+        : `${ok}/${casos.length} testes passaram - comportamento parcial`,
+        ok === casos.length ? "ok" : ok === 0 ? "bad" : "warn");
+}
+
+/* ---------- UI ---------- */
+$("btnConnect").onclick = conectar;
+$("btnDisconnect").onclick = desconectar;
+$("btnDisplay").onclick = () => enviarDisplay().catch(e => log("erro: " + mensagemErro(e), "R"));
+$("btnSelf").onclick = () => testeCompleto().catch(e => log("erro: " + mensagemErro(e), "R"));
+navigator.usb?.addEventListener("disconnect", e => { if (modo === "usb" && dev && e.device === dev) desconectar(); });
+
+const temSerial = !!navigator.serial, temUsb = !!navigator.usb;
+if (!temSerial && !temUsb) {
+  verdict("sem Web Serial e sem WebUSB neste navegador", "bad");
+  log("Use Chrome/Edge no PC ou Chrome no Android.", "R");
+} else {
+  log(`navegador: Web Serial ${temSerial ? "sim" : "não"} · WebUSB ${temUsb ? "sim" : "não"}`);
+  if (temSerial && !temUsb) $("selTransport").value = "serial";
+  if (!temSerial && temUsb) $("selTransport").value = "usb";
+  log("Ligue o pinpad e toque em Conectar." + (temSerial ? " No PC: escolha a COM do pinpad na lista." : ""));
+}
+</script>
+</body>
+</html>
