@@ -486,7 +486,8 @@ async function testeCompleto() {
     { nome: "MT03 (nº de série)",    f: buildFrame("MT03"),           espera: ACK },
     { nome: "MK10 (display)",        f: buildFrame("MK10", "2", "TESTE OK"), espera: ACK },
     { nome: "SC02 (leitor de chip)", f: buildFrame("SC02", "0"),      espera: ACK },
-    { nome: "MS05 (leitor de tarja)",f: buildFrame("MS05"),           espera: ACK },
+    // MS05 NÃO entra aqui de propósito: ele arma o leitor de tarja e, enquanto armado,
+    // o pinpad ignora todos os comandos seguintes. A tarja tem botão próprio.
   ];
   let ok = 0;
   rxBuf = [];
@@ -512,7 +513,7 @@ async function testeCompleto() {
     await sleep(150);
   }
   log(`resumo: ${ok}/${casos.length} testes passaram`, ok === casos.length ? "G" : "R");
-  verdict(ok === casos.length ? "PINPAD OK - comandos de display, tarja e chip respondendo"
+  verdict(ok === casos.length ? "PINPAD OK - display, identificação e leitor de chip respondendo"
         : ok === 0 ? "FALHOU - o pinpad não respondeu (verifique se a aplicação está rodando)"
         : `${ok}/${casos.length} testes passaram - comportamento parcial`, ok === casos.length ? "ok" : ok === 0 ? "bad" : "warn");
 }

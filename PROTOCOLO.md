@@ -113,7 +113,9 @@ oficial da Gertec cita `PPC_CheckSMC` (este comando) e `PPC_ResetSMC` (`SC07`/`S
   o buffer antes de cada comando e valide o `CMD` esperado na resposta (senão o `PP04` de um
   `PP03` é lido como resposta do comando seguinte).
 - **Leitor armado ignora comandos**: depois de `MS05`, o pinpad não responde nada até o cartão
-  passar (ou o estado expirar). Não faça polling de `MS05`.
+  passar (ou o estado expirar). Não faça polling de `MS05` e **não inclua `MS05` em sequências
+  automáticas** — ele deixa o equipamento surdo para os comandos seguintes. Por isso o
+  "Teste completo" do app não usa `MS05` (a tarja tem botão próprio).
 - **Buffer é one-shot**: a leitura da tarja fica disponível uma vez; depois precisa passar o
   cartão de novo.
 - **Baud rate**: o USB do PPC930 é CDC e respondeu `ACK` em `9600`, `19200`, `38400` e `115200`.

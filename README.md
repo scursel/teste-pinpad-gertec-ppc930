@@ -72,10 +72,12 @@ corretamente não mostra trilha nenhuma.
 | 2 | `MT03` | `MT03` + série/modelo/firmware | aplicação carregada e identificável |
 | 3 | `MK10` + texto | `ACK` | canal de escrita no display |
 | 4 | `SC02` + `0` | `SC03` | leitora de chip respondendo |
-| 5 | `MS05` | `ACK` | leitora de tarja armando |
 
-Se os cinco passam, o pinpad está com firmware, USB/cabo e periféricos básicos OK.
+Se os quatro passam, o pinpad está com firmware, USB/cabo e periféricos básicos OK.
 Se **nada** responde, veja a seção de estados abaixo.
+
+> `MS05` (tarja) **não** entra no teste completo de propósito: ele arma o leitor e, enquanto
+> armado, o pinpad ignora todos os comandos seguintes. A tarja tem botão próprio (💳 Ler tarja).
 
 ---
 
