@@ -12,7 +12,7 @@
   *{box-sizing:border-box}
   body{background:var(--bg);color:var(--fg);
        font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
-       padding:16px 14px 40px;max-width:760px;margin:0 auto}
+       padding:16px 14px 40px;max-width:820px;margin:0 auto}
   h1{font-size:19px;margin:0 0 2px}
   h2{font-size:13px;text-transform:uppercase;letter-spacing:.08em;color:var(--mut);margin:0 0 8px}
   .sub{color:var(--mut);font-size:12.5px;margin:0 0 16px;font-family:ui-monospace,Consolas,monospace}
@@ -24,6 +24,7 @@
   button:active{transform:translateY(1px)}
   button:disabled{opacity:.45;cursor:not-allowed}
   button.primary{background:var(--acc);border-color:var(--acc);color:#fff}
+  button.ghost{background:#171b23}
   input[type=text]{flex:1 1 140px;min-height:46px;padding:10px 12px;border-radius:11px;border:1px solid var(--line);
         background:#0c0e13;color:var(--fg);font-size:15px;font-family:ui-monospace,Consolas,monospace}
   select{min-height:46px;padding:10px 12px;border-radius:11px;border:1px solid var(--line);
@@ -36,14 +37,20 @@
   #verdict.ok{background:rgba(34,197,94,.12);border-color:var(--ok);color:var(--ok)}
   #verdict.bad{background:rgba(239,68,68,.12);border-color:var(--bad);color:var(--bad)}
   #verdict.warn{background:rgba(245,158,11,.12);border-color:var(--warn);color:var(--warn)}
-  pre#log{margin:0;max-height:46vh;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
+  .field{display:flex;gap:8px;align-items:baseline;margin-top:8px;font:12.5px/1.5 ui-monospace,Consolas,monospace}
+  .field b{color:var(--mut);font-weight:600;min-width:58px}
+  .field span{word-break:break-all}
+  .pill{display:inline-block;padding:6px 12px;border-radius:999px;border:1px solid var(--line);background:#0c0e13;font-weight:700}
+  .pill.on{background:rgba(34,197,94,.15);border-color:var(--ok);color:var(--ok)}
+  .pill.off{background:#12151c;color:var(--mut)}
+  pre#log{margin:0;max-height:40vh;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
   .L{color:var(--mut)} .S{color:var(--acc)} .G{color:var(--ok)} .R{color:var(--bad)} .Y{color:var(--warn)}
 </style>
 </head>
 <body>
 
 <h1>Teste PIN pad Gertec PPC930</h1>
-<p class="sub">STX | LEN | CMD(5) | 0x1D | DADOS | ETX | XOR(STX..ETX)</p>
+<p class="sub">STX | LEN | CMD | [param] | 0x1D | dados | ETX | XOR</p>
 
 <div class="card">
   <div class="row">
@@ -62,7 +69,34 @@
 </div>
 
 <div class="card">
-  <h2>Testes</h2>
+  <h2>Leitores de cartão</h2>
+  <div class="row">
+    <button id="btnMsr" disabled>💳 Ler tarja (MS05)</button>
+    <button id="btnChip" disabled>🔌 Checar chip (SC02)</button>
+  </div>
+  <div class="row">
+    <span class="pill off" id="chipStatus">chip: ?</span>
+    <label class="chk" style="margin:0"><input type="checkbox" id="chkPoll"> monitorar chip (1×/s)</label>
+  </div>
+  <div class="field"><b>Trilha 1</b><span id="t1">—</span></div>
+  <div class="field"><b>Trilha 2</b><span id="t2">—</span></div>
+  <div class="field"><b>Trilha 3</b><span id="t3">—</span></div>
+  <div class="field"><b>Resposta</b><span id="rawResp">—</span></div>
+</div>
+
+<div class="card">
+  <h2>Pinpad</h2>
+  <div class="row">
+    <button id="btnInfo" class="ghost" disabled>Info (MT03 / PP03)</button>
+  </div>
+  <div class="field"><b>Série</b><span id="sn">—</span></div>
+  <div class="field"><b>Modelo</b><span id="model">—</span></div>
+  <div class="field"><b>Firmware</b><span id="fw">—</span></div>
+  <div class="field"><b>RTC</b><span id="rtc">—</span></div>
+</div>
+
+<div class="card">
+  <h2>Display</h2>
   <div class="row">
     <input type="text" id="txtMsg" value="PINPAD OK" maxlength="16" autocapitalize="characters" spellcheck="false">
     <button id="btnDisplay" disabled>2 · Enviar ao display</button>
@@ -81,10 +115,11 @@
 <script>
 "use strict";
 const VID = 0x1753, PID = 0xC902;      // Gertec PPC930 Pinpad Terminal
-const ACK = 0x06, NAK = 0x15;
+const STX = 0x02, ETX = 0x03, SEP = 0x1D, FSEP = 0x1F, ACK = 0x06, NAK = 0x15, EOT = 0x04;
 const $ = id => document.getElementById(id);
 const logEl = $("log"), verdictEl = $("verdict");
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const enc = new TextEncoder();
 
 const hex = u8 => [...u8].map(b => b.toString(16).toUpperCase().padStart(2, "0")).join(" ");
 const h16 = n => (n || 0).toString(16).toUpperCase();
@@ -98,36 +133,40 @@ function log(msg, cls = "L") {
 }
 function verdict(text, cls = "") { verdictEl.textContent = text; verdictEl.className = cls; }
 
-/* ---------- protocolo Gertec ---------- */
-function frame(cmd5, dados) {
-  if (cmd5.length !== 5) throw new Error("comando deve ter 5 caracteres");
-  const enc = new TextEncoder();
-  const mid = [...enc.encode(cmd5), 0x1D, ...enc.encode(dados), 0x03];
-  const f = [0x02, 1 + 1 + mid.length + 1, ...mid];
-  let x = 0; for (const b of f) x ^= b;
-  f.push(x);
+/* ---------- protocolo Gertec (PPC900/PPC930, linha "PPC") ---------- */
+function xorChk(bytes) { let x = 0; for (const b of bytes) x ^= b; return x; }
+
+// frame: STX | LEN(total) | CMD(4) | [param] | [0x1D + dados] | ETX | XOR
+function buildFrame(cmd, param, data) {
+  const body = [...enc.encode(cmd)];
+  if (param !== undefined && param !== null) body.push(...enc.encode(String(param)));
+  if (data !== undefined) body.push(SEP, ...enc.encode(data));
+  const f = [STX, 0, ...body, ETX];
+  f[1] = f.length + 1;
+  f.push(xorChk(f));
   return new Uint8Array(f);
 }
-function frameComChecksumErrado(cmd5, dados) {
-  const f = frame(cmd5, dados);
-  f[f.length - 1] ^= 0xFF;
-  return f;
+// resposta: STX | LEN | CMD(4) | payload | ETX | XOR
+function parseFrame(bytes) {
+  if (bytes.length < 5 || bytes[0] !== STX) return null;
+  const len = bytes[1];
+  if (len > bytes.length) return null;
+  const f = bytes.slice(0, len);
+  if (f[len - 1] !== xorChk(f.slice(0, len - 1))) return { cmd: "", payload: new Uint8Array(), badChk: true };
+  return { cmd: String.fromCharCode(...f.slice(2, 6)), payload: f.slice(6, len - 2) };
 }
-function decodeResp(r) {
-  if (r.length === 0) return "sem resposta";
-  if (r.length === 1 && r[0] === ACK) return "ACK (06) - aceito";
-  if (r.length === 1 && r[0] === NAK) return "NAK (15) - rejeitado";
-  return "resposta " + hex(r);
-}
+const ascii = u8 => [...u8].map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : "").join("");
 
 /* ---------- estado do transporte ---------- */
 let modo = null;                 // "serial" | "usb"
 let dev = null, epIn = null, epOut = null, iface = null;   // WebUSB
 let port = null, writer = null, reader = null, rxBuf = [];  // Web Serial
+let pollTimer = null;
+let ocupado = false;             // leitura de tarja em andamento: nada mais pode consumir bytes
 
 function uiConectado(detalhe) {
   $("dev").textContent = detalhe;
-  $("btnDisplay").disabled = $("btnSelf").disabled = $("btnDisconnect").disabled = false;
+  for (const id of ["btnMsr", "btnChip", "btnInfo", "btnDisplay", "btnSelf", "btnDisconnect"]) $(id).disabled = false;
   $("btnConnect").disabled = true;
   $("selTransport").disabled = true;
   log("conectado: " + detalhe, "G");
@@ -136,19 +175,19 @@ function uiConectado(detalhe) {
 function uiDesconectado() {
   modo = null; dev = null; epIn = epOut = null; iface = null;
   port = null; writer = null; reader = null; rxBuf = [];
-  $("btnDisplay").disabled = $("btnSelf").disabled = $("btnDisconnect").disabled = true;
+  $("chkPoll").checked = false; pararPoll();
+  for (const id of ["btnMsr", "btnChip", "btnInfo", "btnDisplay", "btnSelf", "btnDisconnect"]) $(id).disabled = true;
   $("btnConnect").disabled = false;
   $("selTransport").disabled = false;
   $("dev").textContent = "desconectado";
+  $("chipStatus").className = "pill off"; $("chipStatus").textContent = "chip: ?";
 }
 function mensagemErro(e) {
   const msg = String(e && e.message ? e.message : e);
   if (/access denied/i.test(msg))
     return msg + " — no Windows o pinpad fica preso ao driver da porta COM; use o modo serial (Web Serial). No Android use USB com adaptador OTG.";
-  if (/claim/i.test(msg))
-    return msg + " — feche outros apps/programas que estejam usando a porta do pinpad e tente de novo.";
-  if (/No port selected|No device selected|user cancelled|cancel/i.test(msg))
-    return msg + " — nenhum dispositivo escolhido na lista.";
+  if (/claim/i.test(msg)) return msg + " — feche outros programas que estejam usando a porta do pinpad.";
+  if (/No port selected|No device selected|cancel/i.test(msg)) return msg + " — nenhum dispositivo escolhido na lista.";
   if (/Failed to open serial port|Access denied to the port|NetworkError/i.test(msg))
     return msg + " — a porta está em uso por outro programa (feche o app Gertec / monitores seriais).";
   return msg;
@@ -163,17 +202,11 @@ async function abrirSerial() {
   reader = port.readable.getReader();
   rxBuf = [];
   (async () => {
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value && value.length) rxBuf.push(...value);
-      }
-    } catch (e) { log("leitura serial encerrada: " + (e.message || e), "Y"); }
+    try { for (;;) { const { value, done } = await reader.read(); if (done) break; if (value && value.length) rxBuf.push(...value); } }
+    catch (e) { log("leitura serial encerrada: " + (e.message || e), "Y"); }
   })();
   modo = "serial";
-  await sleep(800);
-  if (rxBuf.length) { log(`descartando ${rxBuf.length} byte(s) de inicialização da porta`, "Y"); rxBuf = []; }
+  await aquecer();
   const i = port.getInfo();
   uiConectado(`serial · ${i.usbVendorId ? "USB " + h16(i.usbVendorId) + ":" + h16(i.usbProductId) : "porta do sistema"} · 19200 8N1`);
 }
@@ -187,24 +220,22 @@ async function abrirUSB() {
   $("dev").textContent = idDev + " · abrindo…";
   await dev.open();
   if (dev.configuration === null) await dev.selectConfiguration(1);
-
   let pick = null;
   for (const itf of dev.configuration.interfaces) {
     const eps = itf.alternates[0].endpoints;
     const out = eps.find(e => e.direction === "out" && e.type === "bulk");
-    const inp = eps.find(e => e.direction === "in"  && e.type === "bulk");
+    const inp = eps.find(e => e.direction === "in" && e.type === "bulk");
     if (out && inp) { pick = { num: itf.interfaceNumber, out, inp }; break; }
   }
   if (!pick) throw new Error("nenhuma interface com endpoints bulk neste dispositivo");
   await dev.claimInterface(pick.num);
   iface = pick.num; epOut = pick.out; epIn = pick.inp;
-
   try { await dev.controlTransferOut({ requestType:"class", recipient:"interface", request:0x20, value:0, index:iface },
                                       new Uint8Array([0x00, 0x4B, 0, 0, 0, 0, 8])); } catch (e) {}
   try { await dev.controlTransferOut({ requestType:"class", recipient:"interface", request:0x22, value:0x03, index:iface }); } catch (e) {}
   try { await dev.controlTransferOut({ requestType:"standard", recipient:"endpoint", request:0x01, value:0, index:epOut.endpointNumber }); } catch (e) {}
-
   modo = "usb";
+  await aquecer();
   uiConectado(`${idDev} · iface ${iface} · ep ${epOut.endpointNumber}/${epIn.endpointNumber}`);
 }
 
@@ -212,13 +243,8 @@ async function conectar() {
   const pref = $("selTransport").value;
   const escolhido = pref === "auto" ? (navigator.serial ? "serial" : "usb") : pref;
   try {
-    if (escolhido === "serial") {
-      if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador");
-      await abrirSerial();
-    } else {
-      if (!navigator.usb) throw new Error("WebUSB indisponível neste navegador");
-      await abrirUSB();
-    }
+    if (escolhido === "serial") { if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador"); await abrirSerial(); }
+    else { if (!navigator.usb) throw new Error("WebUSB indisponível neste navegador"); await abrirUSB(); }
   } catch (e) {
     uiDesconectado();
     const msg = mensagemErro(e);
@@ -228,6 +254,7 @@ async function conectar() {
 }
 
 async function desconectar() {
+  pararPoll();
   try {
     if (modo === "usb" && dev) {
       if (iface !== null) await dev.releaseInterface(iface);
@@ -244,77 +271,250 @@ async function desconectar() {
   log("desconectado.");
 }
 
-/* ---------- envio / recepção ---------- */
-async function lerUSB(timeoutMs = 900) {
-  const out = [];
-  const t0 = performance.now();
-  while (performance.now() - t0 < timeoutMs) {
-    try {
-      const r = await dev.bulkTransferIn(epIn.endpointNumber, 64, Math.max(60, timeoutMs - (performance.now() - t0)));
-      if (r.status === "ok" && r.data && r.data.length) out.push(...r.data);
-      else break;
-    } catch (e) { break; }
-  }
-  return new Uint8Array(out);
-}
-async function lerSerial(timeoutMs = 900) {
-  const t0 = performance.now();
-  while (rxBuf.length === 0 && performance.now() - t0 < timeoutMs) await sleep(25);
-  const out = rxBuf.splice(0);
-  return new Uint8Array(out);
-}
-const ler = (ms = 1200) => (modo === "usb" ? lerUSB(ms) : lerSerial(ms));
-
-async function enviar(f, rotulo) {
-  log("→ " + rotulo + " : " + hex(f), "S");
+/* ---------- I/O cru ---------- */
+async function rxChunk(timeoutMs) {
   if (modo === "usb") {
     try {
-      await dev.bulkTransferOut(epOut.endpointNumber, f);
-    } catch (e) {
-      log("falha na escrita (" + e.message + ") - limpando stall e tentando de novo", "Y");
-      try { await dev.clearHalt("out", epOut.endpointNumber); } catch (e2) {}
-      await dev.bulkTransferOut(epOut.endpointNumber, f);
-    }
-  } else {
-    await writer.write(f);
+      const r = await dev.bulkTransferIn(epIn.endpointNumber, 128, Math.max(40, timeoutMs));
+      return (r.status === "ok" && r.data) ? r.data : new Uint8Array();
+    } catch (e) { return new Uint8Array(); }
   }
-  const r = await ler();
-  log("← " + decodeResp(r) + (r.length ? "  [" + hex(r) + "]" : ""), r.length ? "G" : "Y");
-  return r;
+  const t0 = performance.now();
+  while (rxBuf.length === 0 && performance.now() - t0 < timeoutMs) await sleep(15);
+  return new Uint8Array(rxBuf.splice(0));
+}
+async function tx(bytes) {
+  if (modo === "usb") await dev.bulkTransferOut(epOut.endpointNumber, bytes);
+  else await writer.write(bytes);
 }
 
-/* ---------- testes ---------- */
+// o primeiro comando depois de abrir a porta costuma ser descartado pelo pinpad
+async function aquecer() {
+  await sleep(800);
+  rxBuf = [];
+  await tx(buildFrame("MT10"));
+  const r = await rxChunk(600);
+  if (rxBuf.length) rxBuf = [];
+  log("warm-up: " + (r.length ? "resposta " + hex(r) : "sem resposta"), "L");
+}
+
+/* ---------- comando + resposta ---------- */
+// descarta qualquer byte pendente (resposta atrasada de comando anterior)
+async function drenar() {
+  for (let i = 0; i < 3; i++) {
+    const c = await rxChunk(120);
+    if (!c.length) break;
+    log("descartando " + c.length + " byte(s) pendentes: " + hex(c), "Y");
+  }
+  rxBuf = [];
+}
+
+async function comando(cmd, param, data, timeoutMs = 1500, esperaCmd = null) {
+  await drenar();
+  const f = buildFrame(cmd, param, data);
+  log("→ " + cmd + (param !== undefined && param !== null ? param : "") + (data !== undefined ? " \"" + data + "\"" : "") + "  " + hex(f), "S");
+  await tx(f);
+  const bytes = [];
+  const t0 = performance.now();
+  let frame = null;
+  let ack = null;
+  while (performance.now() - t0 < timeoutMs) {
+    const chunk = await rxChunk(150);
+    if (chunk.length) bytes.push(...chunk);
+    if (ack === null && bytes.length) ack = bytes[0];
+    const i = bytes.indexOf(STX);
+    if (i >= 0 && bytes.length >= i + 2 && bytes.length >= i + bytes[i + 1]) {
+      const cand = parseFrame(new Uint8Array(bytes.slice(i)));
+      if (cand && esperaCmd && cand.cmd !== esperaCmd) {
+        log("   (ignorando resposta atrasada " + cand.cmd + ")", "Y");
+        bytes.splice(0, i + bytes[i + 1]);
+        continue;
+      }
+      frame = cand;
+      break;
+    }
+    if (ack !== null && ack !== ACK && ack !== EOT) break;   // NAK: não vem mais nada
+  }
+  if (frame) log("← " + (ack === ACK ? "ACK " : "") + frame.cmd + (frame.payload.length ? " [" + hex(frame.payload) + "] " + ascii(frame.payload) : "") + (frame.badChk ? "  (checksum inválido!)" : ""), "G");
+  else if (ack === ACK) log("← ACK (06) sem dados", "G");
+  else if (ack === NAK) log("← NAK (15) - comando rejeitado", "R");
+  else if (ack === EOT) log("← EOT (04)", "Y");
+  else log("← sem resposta [" + hex(new Uint8Array(bytes)) + "]", "Y");
+  return { ack, frame, raw: new Uint8Array(bytes) };
+}
+
+/* ---------- leitura de tarja ---------- */
+// espera um frame espontâneo (o pinpad emite MS06 quando o cartão passa)
+async function esperarFrame(cmdEsperado, timeoutMs) {
+  const bytes = [];
+  const t0 = performance.now();
+  while (performance.now() - t0 < timeoutMs) {
+    const chunk = await rxChunk(250);
+    if (chunk.length) bytes.push(...chunk);
+    const i = bytes.indexOf(STX);
+    if (i >= 0 && bytes.length >= i + 2 && bytes.length >= i + bytes[i + 1]) {
+      const f = parseFrame(new Uint8Array(bytes.slice(i)));
+      if (f && (!cmdEsperado || f.cmd === cmdEsperado)) return f;
+      if (f) bytes.splice(0, i + bytes[i + 1]);
+    }
+  }
+  return null;
+}
+
+function extrairTrilhas(frame) {
+  const partes = [];
+  let cur = [];
+  for (const b of frame.payload) { if (b === FSEP) { if (cur.length) partes.push(cur); cur = []; } else cur.push(b); }
+  if (cur.length) partes.push(cur);
+  const t = { "1": "—", "2": "—", "3": "—" };
+  for (const p of partes) {
+    const n = String.fromCharCode(p[0]);
+    if (t[n] !== undefined) t[n] = ascii(new Uint8Array(p.slice(1)));
+  }
+  return t;
+}
+function mostrarTrilhas(t) {
+  $("t1").textContent = t["1"]; $("t2").textContent = t["2"]; $("t3").textContent = t["3"];
+}
+
+async function lerTarja() {
+  if ($("btnMsr").disabled || ocupado) return;
+  ocupado = true;
+  pararPoll();
+  $("chkPoll").checked = false;
+  const outros = ["btnMsr", "btnChip", "btnInfo", "btnDisplay", "btnSelf", "chkPoll"];
+  for (const id of outros) $(id).disabled = true;
+  try {
+    // limpa o resultado anterior para nao confundir leitura nova com antiga
+    mostrarTrilhas({ "1": "—", "2": "—", "3": "—" });
+    $("rawResp").textContent = "—";
+    // 1) arma o leitor (MS05 responde ACK). Enquanto espera o cartao, o pinpad ignora comandos.
+    await drenar();
+    const f = buildFrame("MS05");
+    log("→ MS05 (arma o leitor de tarja)  " + hex(f), "S");
+    await tx(f);
+    const ackBytes = await rxChunk(1500);
+    if (ackBytes.length && ackBytes[0] === NAK) {
+      log("← NAK ao armar o leitor", "R");
+      verdict("leitor recusou armar (NAK)", "bad");
+      return;
+    }
+    log("← ACK - leitor armado, aguardando o cartao", "G");
+    verdict("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", "warn");
+    // 2) espera o evento espontaneo MS06 (o pinpad ignora comandos enquanto esta armado)
+    let frame = await esperarFrame("MS06", 90000);
+    if (!frame) {
+      // nao usar coleta: o leitor segue armado e ignora comandos. Continua escutando.
+      log("90 s sem cartão - o leitor CONTINUA armado, seguindo na escuta", "Y");
+      verdict("leitor ainda armado — pode passar o cartão (escuta contínua por 3 min)", "warn");
+      frame = await esperarFrame("MS06", 180000);
+    }
+    if (frame && frame.payload.length > 6) {
+      const t = extrairTrilhas(frame);
+      mostrarTrilhas(t);
+      $("rawResp").textContent = hex(frame.payload);
+      log("← EVENTO " + frame.cmd + " (cartão lido)  " + hex(frame.payload).slice(0, 60) + "…", "G");
+      verdict("TARJA LIDA com sucesso", "ok");
+    } else {
+      log("nenhum cartão passou durante a escuta", "Y");
+      verdict("nenhum cartão lido — clique em Ler tarja e passe o cartão durante a janela", "warn");
+    }
+  } finally {
+    ocupado = false;
+    if (modo) for (const id of outros) $(id).disabled = false;
+  }
+}
+
+/* ---------- chip ---------- */
+async function checarChip(silencioso = false) {
+  if (ocupado) return null;            // leitura de tarja em andamento: nao disputar bytes
+  const r = await comando("SC02", "0", undefined, 1500, "SC03");
+  if (!silencioso) $("rawResp").textContent = r.raw.length ? hex(r.raw) : "—";
+  let presente = null;
+  if (r.frame && r.frame.cmd === "SC03") {
+    const s = ascii(r.frame.payload);
+    presente = s.slice(-1) === "1";
+    if (!silencioso) verdict(presente ? "CHIP DETECTADO (cartão inserido)" : "chip: nenhum cartão inserido", presente ? "ok" : "warn");
+  } else if (!silencioso) {
+    verdict("sem resposta do leitor de chip", "bad");
+  }
+  const el = $("chipStatus");
+  if (presente === null) { el.className = "pill off"; el.textContent = "chip: ?"; }
+  else { el.className = "pill " + (presente ? "on" : "off"); el.textContent = "chip: " + (presente ? "PRESENTE" : "ausente"); }
+  return presente;
+}
+function pararPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
+function iniciarPoll() {
+  pararPoll();
+  if (ocupado) return;
+  pollTimer = setInterval(() => { if (!ocupado) checarChip(true).catch(() => {}); }, 1200);
+}
+
+/* ---------- info do pinpad ---------- */
+async function infoPinpad() {
+  const r1 = await comando("MT03", null, undefined, 2000, "MT03");
+  if (r1.frame && r1.frame.cmd === "MT03") {
+    // separa os campos (0x1F) ANTES de converter para ASCII
+    const campos = [];
+    let cur = [];
+    for (const b of r1.frame.payload) { if (b === FSEP) { campos.push(ascii(new Uint8Array(cur)).trim()); cur = []; } else cur.push(b); }
+    if (cur.length) campos.push(ascii(new Uint8Array(cur)).trim());
+    const partes = campos.filter(Boolean);
+    $("sn").textContent = partes[0] || "—";
+    $("model").textContent = partes[1] || "—";
+    $("fw").textContent = partes[2] || "—";
+    log("info: série=" + (partes[0] || "?") + " modelo=" + (partes[1] || "?") + " firmware=" + (partes[2] || "?"), "G");
+  }
+  const r2 = await comando("PP03", null, undefined, 2000, "PP04");
+  if (r2.frame && r2.frame.payload.length) {
+    const s = ascii(r2.frame.payload).replace(/^PP04/, "");
+    $("rtc").textContent = s;
+  }
+}
+
+/* ---------- display e teste básico ---------- */
 async function enviarDisplay() {
   const txt = $("txtMsg").value || "PINPAD OK";
-  const r = await enviar(frame("MK102", txt), `display "${txt}"`);
-  verdict(r.length === 1 && r[0] === ACK
-    ? 'display OK - o LCD do pinpad deve mostrar "' + txt + '"'
-    : "sem ACK ao escrever no display", r.length === 1 && r[0] === ACK ? "ok" : "warn");
+  const r = await comando("MK10", "2", txt, 1500);
+  verdict(r.ack === ACK ? 'display OK - o LCD deve mostrar "' + txt + '"' : "sem ACK ao escrever no display", r.ack === ACK ? "ok" : "warn");
 }
 
 async function testeCompleto() {
   if (!modo) return;
   const casos = [
-    { nome: "frame válido",             f: frame("MK102", "TESTE OK"),                  espera: ACK },
-    { nome: "checksum corrompido",      f: frameComChecksumErrado("MK102", "TESTE OK"), espera: NAK },
-    { nome: "texto puro (sem framing)", f: new TextEncoder().encode("HELLO WORLD\r\n"), espera: null },
-    { nome: "frame válido novamente",   f: frame("MK102", "PPC930 OK"),                 espera: ACK },
+    { nome: "MT10 (alive)",          f: buildFrame("MT10"),           espera: ACK },
+    { nome: "MT03 (nº de série)",    f: buildFrame("MT03"),           espera: ACK },
+    { nome: "MK10 (display)",        f: buildFrame("MK10", "2", "TESTE OK"), espera: ACK },
+    { nome: "SC02 (leitor de chip)", f: buildFrame("SC02", "0"),      espera: ACK },
+    { nome: "MS05 (leitor de tarja)",f: buildFrame("MS05"),           espera: ACK },
   ];
   let ok = 0;
   rxBuf = [];
   verdict("executando testes…", "");
   for (const c of casos) {
-    const r = await enviar(c.f, c.nome);
-    const passou = c.espera === null ? r.length === 0 : (r.length === 1 && r[0] === c.espera);
-    log("   " + (passou ? "PASSOU" : "FALHOU") + " - " + c.nome, passou ? "G" : "R");
+    const f = c.f;
+    log("→ " + c.nome + "  " + hex(f), "S");
+    await tx(f);
+    const bytes = [];
+    const t0 = performance.now();
+    let frame = null;
+    while (performance.now() - t0 < 2000) {
+      const chunk = await rxChunk(150);
+      if (chunk.length) bytes.push(...chunk);
+      const i = bytes.indexOf(STX);
+      if (i >= 0 && bytes.length >= i + 2 && bytes.length >= i + bytes[i + 1]) { frame = parseFrame(new Uint8Array(bytes.slice(i))); break; }
+      if (bytes.length && bytes[0] !== ACK) break;
+    }
+    const ack = bytes.length ? bytes[0] : null;
+    const passou = ack === c.espera;
+    log("   " + (passou ? "PASSOU" : "FALHOU") + " - " + c.nome + (frame ? " [" + frame.cmd + "]" : ""), passou ? "G" : "R");
     if (passou) ok++;
-    await sleep(120);
+    await sleep(150);
   }
   log(`resumo: ${ok}/${casos.length} testes passaram`, ok === casos.length ? "G" : "R");
-  verdict(ok === casos.length ? "PINPAD OK - comunicação, framing e checksum validados"
-        : ok === 0 ? "FALHOU - o pinpad não respondeu"
-        : `${ok}/${casos.length} testes passaram - comportamento parcial`,
-        ok === casos.length ? "ok" : ok === 0 ? "bad" : "warn");
+  verdict(ok === casos.length ? "PINPAD OK - comandos de display, tarja e chip respondendo"
+        : ok === 0 ? "FALHOU - o pinpad não respondeu (verifique se a aplicação está rodando)"
+        : `${ok}/${casos.length} testes passaram - comportamento parcial`, ok === casos.length ? "ok" : ok === 0 ? "bad" : "warn");
 }
 
 /* ---------- UI ---------- */
@@ -322,6 +522,10 @@ $("btnConnect").onclick = conectar;
 $("btnDisconnect").onclick = desconectar;
 $("btnDisplay").onclick = () => enviarDisplay().catch(e => log("erro: " + mensagemErro(e), "R"));
 $("btnSelf").onclick = () => testeCompleto().catch(e => log("erro: " + mensagemErro(e), "R"));
+$("btnMsr").onclick = () => lerTarja().catch(e => log("erro: " + mensagemErro(e), "R"));
+$("btnChip").onclick = () => checarChip().catch(e => log("erro: " + mensagemErro(e), "R"));
+$("btnInfo").onclick = () => infoPinpad().catch(e => log("erro: " + mensagemErro(e), "R"));
+$("chkPoll").onchange = e => { if (e.target.checked) iniciarPoll(); else pararPoll(); };
 navigator.usb?.addEventListener("disconnect", e => { if (modo === "usb" && dev && e.device === dev) desconectar(); });
 
 const temSerial = !!navigator.serial, temUsb = !!navigator.usb;
