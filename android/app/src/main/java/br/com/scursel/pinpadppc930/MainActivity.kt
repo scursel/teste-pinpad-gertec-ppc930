@@ -21,14 +21,17 @@ class MainActivity : Activity() {
 
     private lateinit var usb: PinpadUsb
     private lateinit var status: TextView
-    private lateinit var trilhas: TextView
     private lateinit var chipTxt: TextView
     private lateinit var infoTxt: TextView
     private lateinit var logView: TextView
+    private lateinit var chkMonitor: CheckBox
     private val hora = SimpleDateFormat("HH:mm:ss", Locale.getDefault())
 
-    private var monitorando = false
-    private var ocupado = false
+    /** um consumidor de bytes por vez (monitor de chip x tarja x teste completo) */
+    private val io = PortaoIo()
+    @Volatile private var monitorando = false
+    @Volatile private var cancelar = false
+    private var threadMonitor: Thread? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -38,7 +41,12 @@ class MainActivity : Activity() {
         log("Ligue o pinpad via OTG e toque em Conectar.")
     }
 
-    override fun onDestroy() { super.onDestroy(); usb.fechar() }
+    override fun onDestroy() {
+        monitorando = false
+        cancelar = true
+        super.onDestroy()
+        usb.fechar()
+    }
 
     // ---------- UI ----------
     private fun botao(texto: String, bloco: () -> Unit): Button {
@@ -84,9 +92,9 @@ class MainActivity : Activity() {
 
         val linha3 = LinearLayout(this)
         linha3.addView(botao("Info (MT03/PP03)") { infoPinpad() }, peso())
-        val chk = CheckBox(this); chk.text = "monitorar chip 1×/s"; chk.setTextColor(Color.LTGRAY)
-        chk.setOnCheckedChangeListener { _, v -> monitorando = v; if (v) iniciarMonitor() }
-        linha3.addView(chk, peso())
+        chkMonitor = CheckBox(this); chkMonitor.text = "monitorar chip 1×/s"; chkMonitor.setTextColor(Color.LTGRAY)
+        chkMonitor.setOnCheckedChangeListener { _, v -> monitorando = v; if (v) iniciarMonitor() }
+        linha3.addView(chkMonitor, peso())
         raiz.addView(linha3)
 
         val linha4 = LinearLayout(this)
@@ -97,10 +105,9 @@ class MainActivity : Activity() {
 
         raiz.addView(botao("Teste completo (MT10/MT03/MK10/SC02)") { testeCompleto() })
 
-        val (lT, t) = campo("Trilha 1"); trilhas = t; raiz.addView(lT)
+        val (lT, t) = campo("Trilha 1"); raiz.addView(lT)
         val (lT2, t2) = campo("Trilha 2"); raiz.addView(lT2)
         val (lT3, t3) = campo("Trilha 3"); raiz.addView(lT3)
-        t2.tag = "t2"; t3.tag = "t3"
         trilhasTri = arrayOf(t, t2, t3)
 
         val (lC, c) = campo("Chip"); chipTxt = c; raiz.addView(lC)
@@ -138,19 +145,24 @@ class MainActivity : Activity() {
         status.setTextColor(when (ok) { true -> Color.rgb(34,197,94); false -> Color.rgb(239,68,68); null -> Color.LTGRAY })
     }
 
-    /** roda em thread de fundo e protege contra concorrência */
+    /**
+     * Roda em thread de fundo com o portao de I/O fechado — nenhuma outra operacao
+     * (nem o monitor de chip) consome bytes enquanto isto roda.
+     * O portao e adquirido aqui na UI e liberado na thread de trabalho; por isso PortaoIo
+     * usa Semaphore e nao ReentrantLock.
+     */
     private fun tarefa(bloco: () -> Unit) {
-        if (ocupado) { log("ocupado - aguarde a operação atual"); return }
-        ocupado = true
+        if (!io.tentarEntrar()) { log("ocupado - aguarde a operação atual"); return }
         Thread {
             try { bloco() } catch (e: Exception) { log("erro: ${e.message}") }
-            finally { ocupado = false }
+            finally { io.sair() }
         }.also { it.isDaemon = true; it.start() }
     }
 
     // ---------- operações ----------
     private fun conectar() = tarefa {
         monitorando = false
+        cancelar = false
         mostrarStatus("abrindo USB…")
         val ok = usb.abrir { log(it) }
         if (!ok) { mostrarStatus("falha ao conectar", false); return@tarefa }
@@ -163,11 +175,21 @@ class MainActivity : Activity() {
         mostrarStatus("conectado · ${usb.descrever()}", true)
     }
 
-    private fun desconectar() = tarefa {
+    /**
+     * Nao passa por tarefa(): precisa funcionar justamente quando o portao esta ocupado
+     * (ex.: uma leitura de tarja esperando o cartao por ate 270 s). Fecha a USB, o que
+     * faz a espera longa terminar, e o flag `cancelar` interrompe os lacos de leitura.
+     */
+    private fun desconectar() {
         monitorando = false
-        usb.fechar()
-        mostrarStatus("desconectado")
-        log("desconectado")
+        cancelar = true
+        runOnUiThread { if (::chkMonitor.isInitialized) chkMonitor.isChecked = false }
+        Thread {
+            try { threadMonitor?.join(2000) } catch (_: InterruptedException) {}
+            try { usb.fechar() } catch (e: Exception) { log("erro ao fechar: ${e.message}") }
+            mostrarStatus("desconectado")
+            log("desconectado")
+        }.also { it.isDaemon = true; it.start() }
     }
 
     private fun comando(cmd: String, param: String? = null, dados: String? = null,
@@ -179,15 +201,17 @@ class MainActivity : Activity() {
         val buf = ArrayList<Byte>()
         var ack: Int? = null
         var decorrido = 0
-        while (decorrido < timeoutMs) {
+        while (decorrido < timeoutMs && !cancelar) {
             val chunk = usb.ler(150)
             if (chunk.isNotEmpty()) { chunk.forEach { buf.add(it) }; decorrido = 0 } else decorrido += 150
             if (ack == null && buf.isNotEmpty()) ack = buf[0].toInt() and 0xFF
-            val fr = PinpadProtocol.parseFrame(buf.toByteArray())
-            if (fr != null) {
+            val achado = acharFrame(buf)
+            if (achado != null) {
+                val fr = achado.frame
                 if (espera != null && fr.cmd != espera) {
                     log("   (ignorando resposta atrasada ${fr.cmd})")
-                    buf.clear(); continue
+                    buf.subList(0, achado.offset + achado.tamanho).clear()
+                    continue
                 }
                 log("← ${if (ack == PinpadProtocol.ACK) "ACK " else ""}${fr.cmd} " +
                     (if (fr.payload.isNotEmpty()) "[${PinpadProtocol.hex(fr.payload)}] " + PinpadProtocol.ascii(fr.payload) else "") +
@@ -205,6 +229,28 @@ class MainActivity : Activity() {
         return Pair(ack, null)
     }
 
+    /** Um frame completo encontrado no buffer, com o tamanho que ele ocupa. */
+    private class Achado(val frame: PinpadProtocol.Frame, val offset: Int, val tamanho: Int)
+
+    /**
+     * Procura um frame completo a partir de um STX no buffer.
+     *
+     * Devolve tambem quantos bytes o frame ocupa para que o chamador descarte SO ele.
+     * Antes o codigo fazia buf.clear(), o que jogava fora bytes que chegaram junto —
+     * era assim que um evento MS06 se perdia no meio de outra leitura.
+     */
+    private fun acharFrame(buf: List<Byte>): Achado? {
+        for (i in 0 until buf.size - 1) {
+            if (buf[i].toInt() and 0xFF != PinpadProtocol.STX) continue
+            val len = buf[i + 1].toInt() and 0xFF
+            if (len < 8) continue                 // 0x02 solto no lixo: segue procurando
+            if (buf.size < i + len) return null   // frame ainda incompleto: espera mais bytes
+            val f = PinpadProtocol.parseFrame(buf.toByteArray(), i) ?: continue
+            return Achado(f, i, len)
+        }
+        return null
+    }
+
     private fun lerTarja() = tarefa {
         if (!usb.conectado) { log("conecte primeiro"); return@tarefa }
         mostrarStatus("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", null)
@@ -213,10 +259,12 @@ class MainActivity : Activity() {
         if (ack == PinpadProtocol.NAK) { mostrarStatus("leitor recusou armar (NAK)", false); return@tarefa }
         log("leitor armado - aguardando o cartão passar")
         var fr = esperarEvento("MS06", 90_000)
+        if (cancelar) return@tarefa                       // desconectou durante a espera
         if (fr == null) {
             log("90 s sem cartão - continuo escutando (o leitor segue armado)")
             mostrarStatus("leitor ainda armado - pode passar o cartão", null)
             fr = esperarEvento("MS06", 180_000)
+            if (cancelar) return@tarefa
         }
         if (fr != null && fr.payload.size > 6) {
             val t = PinpadProtocol.extrairTrilhas(fr.payload)
@@ -231,17 +279,21 @@ class MainActivity : Activity() {
         }
     }
 
-    /** espera um frame espontâneo (o pinpad envia sozinho quando lê o cartão) */
+    /**
+     * Espera um frame espontâneo (o pinpad envia sozinho quando lê o cartão).
+     * Descarta apenas os frames que não interessam, preservando o resto do buffer —
+     * antes um buf.clear() podia jogar fora bytes que chegaram na mesma leitura.
+     */
     private fun esperarEvento(cmd: String, timeoutMs: Int): PinpadProtocol.Frame? {
         val buf = ArrayList<Byte>()
         var decorrido = 0
-        while (decorrido < timeoutMs) {
+        while (decorrido < timeoutMs && !cancelar) {
             val chunk = usb.ler(250)
             if (chunk.isNotEmpty()) { chunk.forEach { buf.add(it) }; decorrido = 0 } else decorrido += 250
-            val fr = PinpadProtocol.parseFrame(buf.toByteArray())
-            if (fr != null) {
-                if (fr.cmd == cmd) return fr
-                buf.clear()
+            val achado = acharFrame(buf)
+            if (achado != null) {
+                if (achado.frame.cmd == cmd) return achado.frame
+                buf.subList(0, achado.offset + achado.tamanho).clear()
             }
         }
         return null
@@ -263,18 +315,39 @@ class MainActivity : Activity() {
         }, presente)
     }
 
-    private fun monitorarChip() = tarefa {
+    /**
+     * Monitor de chip (1×/s).
+     *
+     * NÃO usa tarefa(): o portão é adquirido a cada iteração, e não uma vez para o loop
+     * inteiro. Antes o monitor segurava o portão enquanto a caixa estivesse marcada, e
+     * TODO outro botão (tarja, chip, info, display, teste completo, desconectar) era
+     * recusado com "ocupado - aguarde a operação atual" — só funcionava desmarcando a caixa.
+     *
+     * Adquirindo por iteração, uma operação longa (tarja, teste completo) assume a porta
+     * entre uma consulta e outra, e o monitor volta sozinho depois.
+     */
+    private fun monitorarChip() {
         while (monitorando) {
-            val f = PinpadProtocol.buildFrame("SC02", "0")
-            usb.tx(f)
-            val fr = esperarEvento("SC03", 1200)
-            val presente = fr?.let { PinpadProtocol.ascii(it.payload).lastOrNull() == '1' }
-            runOnUiThread { chipTxt.text = when (presente) { true -> "PRESENTE"; false -> "ausente"; null -> "?" } }
+            if (!usb.conectado) { Thread.sleep(500); continue }
+            if (!io.tentarEntrar()) { Thread.sleep(300); continue }
+            try {
+                usb.tx(PinpadProtocol.buildFrame("SC02", "0"))
+                val fr = esperarEvento("SC03", 1200)
+                val presente = fr?.let { PinpadProtocol.ascii(it.payload).lastOrNull() == '1' }
+                runOnUiThread { chipTxt.text = when (presente) { true -> "PRESENTE"; false -> "ausente"; null -> "?" } }
+            } catch (e: Exception) {
+                log("monitor de chip: ${e.message}")
+            } finally {
+                io.sair()
+            }
             Thread.sleep(300)
         }
     }
+
+    /** Uma única thread de monitor: marcar/desmarcar rápido não pode criar duas. */
     private fun iniciarMonitor() {
-        Thread { monitorarChip() }.also { it.isDaemon = true; it.start() }
+        if (threadMonitor?.isAlive == true) return
+        threadMonitor = Thread { monitorarChip() }.also { it.isDaemon = true; it.start() }
     }
 
     private fun infoPinpad() = tarefa {
@@ -312,7 +385,7 @@ class MainActivity : Activity() {
             if (!usb.tx(f)) { log("   FALHOU - erro de escrita"); continue }
             var ack: Int? = null
             val buf = ArrayList<Byte>(); var d = 0
-            while (d < 2000) {
+            while (d < 2000 && !cancelar) {
                 val c = usb.ler(150)
                 if (c.isNotEmpty()) { c.forEach { buf.add(it) }; d = 0 } else d += 150
                 if (ack == null && buf.isNotEmpty()) ack = buf[0].toInt() and 0xFF

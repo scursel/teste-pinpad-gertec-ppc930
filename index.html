@@ -162,7 +162,27 @@ let modo = null;                 // "serial" | "usb"
 let dev = null, epIn = null, epOut = null, iface = null;   // WebUSB
 let port = null, writer = null, reader = null, rxBuf = [];  // Web Serial
 let pollTimer = null;
-let ocupado = false;             // leitura de tarja em andamento: nada mais pode consumir bytes
+let ocupado = false;             // uma operação por vez na porta: nada mais pode consumir bytes
+let cancelar = false;            // desconectar interrompe esperas longas (tarja)
+
+/* ---------- portão de I/O ---------- */
+// O pinpad tem UMA fila de bytes. Sem isto, o poll do chip dispara no meio de outra
+// operação, chama drenar() e rouba a resposta — o "teste completo" então falha em parte
+// e o log enche de "descartando N byte(s) pendentes".
+// Toda operação que lê a porta passa por aqui. O teste e a marcação de ocupado são
+// síncronos (não há await entre eles), então dois cliques simultâneos não se cruzam.
+async function exclusivo(nome, fn, silencioso = false) {
+  if (ocupado) {
+    if (!silencioso) log("ocupado — aguarde a operação atual (" + nome + ")", "Y");
+    return;
+  }
+  ocupado = true;
+  try {
+    return await fn();
+  } finally {
+    ocupado = false;
+  }
+}
 
 function uiConectado(detalhe) {
   $("dev").textContent = detalhe;
@@ -248,6 +268,7 @@ async function conectar() {
   try {
     // lembra o transporte que funcionou (evita tentar serial primeiro e falhar sempre no Android)
     if (window.__transporteOk) escolhido = window.__transporteOk;
+    cancelar = false;
     if (escolhido === "serial") {
       if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador");
       await abrirSerial();
@@ -265,6 +286,7 @@ async function conectar() {
 }
 
 async function desconectar() {
+  cancelar = true;                 // interrompe uma leitura de tarja em andamento
   pararPoll();
   try {
     if (modo === "usb" && dev) {
@@ -329,7 +351,7 @@ async function comando(cmd, param, data, timeoutMs = 1500, esperaCmd = null) {
   const t0 = performance.now();
   let frame = null;
   let ack = null;
-  while (performance.now() - t0 < timeoutMs) {
+  while (performance.now() - t0 < timeoutMs && !cancelar) {
     const chunk = await rxChunk(150);
     if (chunk.length) bytes.push(...chunk);
     if (ack === null && bytes.length) ack = bytes[0];
@@ -359,7 +381,7 @@ async function comando(cmd, param, data, timeoutMs = 1500, esperaCmd = null) {
 async function esperarFrame(cmdEsperado, timeoutMs) {
   const bytes = [];
   const t0 = performance.now();
-  while (performance.now() - t0 < timeoutMs) {
+  while (performance.now() - t0 < timeoutMs && !cancelar) {
     const chunk = await rxChunk(250);
     if (chunk.length) bytes.push(...chunk);
     const i = bytes.indexOf(STX);
@@ -389,10 +411,7 @@ function mostrarTrilhas(t) {
 }
 
 async function lerTarja() {
-  if ($("btnMsr").disabled || ocupado) return;
-  ocupado = true;
-  pararPoll();
-  $("chkPoll").checked = false;
+  // quem garante "uma operação por vez" é exclusivo(); aqui só cuidamos da interface
   const outros = ["btnMsr", "btnChip", "btnInfo", "btnDisplay", "btnSelf", "chkPoll"];
   for (const id of outros) $(id).disabled = true;
   try {
@@ -414,11 +433,13 @@ async function lerTarja() {
     verdict("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", "warn");
     // 2) espera o evento espontaneo MS06 (o pinpad ignora comandos enquanto esta armado)
     let frame = await esperarFrame("MS06", 90000);
+    if (cancelar) return;                    // desconectou durante a espera
     if (!frame) {
       // nao usar coleta: o leitor segue armado e ignora comandos. Continua escutando.
       log("90 s sem cartão - o leitor CONTINUA armado, seguindo na escuta", "Y");
       verdict("leitor ainda armado — pode passar o cartão (escuta contínua por 3 min)", "warn");
       frame = await esperarFrame("MS06", 180000);
+      if (cancelar) return;
     }
     if (frame && frame.payload.length > 6) {
       const t = extrairTrilhas(frame);
@@ -431,14 +452,12 @@ async function lerTarja() {
       verdict("nenhum cartão lido — clique em Ler tarja e passe o cartão durante a janela", "warn");
     }
   } finally {
-    ocupado = false;
     if (modo) for (const id of outros) $(id).disabled = false;
   }
 }
 
 /* ---------- chip ---------- */
 async function checarChip(silencioso = false) {
-  if (ocupado) return null;            // leitura de tarja em andamento: nao disputar bytes
   const r = await comando("SC02", "0", undefined, 1500, "SC03");
   if (!silencioso) $("rawResp").textContent = r.raw.length ? hex(r.raw) : "—";
   let presente = null;
@@ -457,8 +476,12 @@ async function checarChip(silencioso = false) {
 function pararPoll() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 function iniciarPoll() {
   pararPoll();
-  if (ocupado) return;
-  pollTimer = setInterval(() => { if (!ocupado) checarChip(true).catch(() => {}); }, 1200);
+  if (!modo) return;
+  // o tick entra por exclusivo(): durante uma operação longa (tarja, teste completo) ele
+  // simplesmente não entra — sem precisar desligar/religar o timer, e sem poluir o log
+  pollTimer = setInterval(() => {
+    exclusivo("monitor de chip", () => checarChip(true), true).catch(() => {});
+  }, 1200);
 }
 
 /* ---------- info do pinpad ---------- */
@@ -510,7 +533,7 @@ async function testeCompleto() {
     const bytes = [];
     const t0 = performance.now();
     let frame = null;
-    while (performance.now() - t0 < 2000) {
+    while (performance.now() - t0 < 2000 && !cancelar) {
       const chunk = await rxChunk(150);
       if (chunk.length) bytes.push(...chunk);
       const i = bytes.indexOf(STX);
@@ -530,13 +553,15 @@ async function testeCompleto() {
 }
 
 /* ---------- UI ---------- */
+// toda operação passa por exclusivo(): uma por vez na porta, e o monitor de chip volta sozinho
+const R = e => log("erro: " + mensagemErro(e), "R");
 $("btnConnect").onclick = conectar;
 $("btnDisconnect").onclick = desconectar;
-$("btnDisplay").onclick = () => enviarDisplay().catch(e => log("erro: " + mensagemErro(e), "R"));
-$("btnSelf").onclick = () => testeCompleto().catch(e => log("erro: " + mensagemErro(e), "R"));
-$("btnMsr").onclick = () => lerTarja().catch(e => log("erro: " + mensagemErro(e), "R"));
-$("btnChip").onclick = () => checarChip().catch(e => log("erro: " + mensagemErro(e), "R"));
-$("btnInfo").onclick = () => infoPinpad().catch(e => log("erro: " + mensagemErro(e), "R"));
+$("btnDisplay").onclick = () => exclusivo("display", enviarDisplay).catch(R);
+$("btnSelf").onclick = () => exclusivo("teste completo", testeCompleto).catch(R);
+$("btnMsr").onclick = () => exclusivo("tarja", lerTarja).catch(R);
+$("btnChip").onclick = () => exclusivo("chip", () => checarChip(false)).catch(R);
+$("btnInfo").onclick = () => exclusivo("info", infoPinpad).catch(R);
 $("chkPoll").onchange = e => { if (e.target.checked) iniciarPoll(); else pararPoll(); };
 navigator.usb?.addEventListener("disconnect", e => { if (modo === "usb" && dev && e.device === dev) desconectar(); });
 
