@@ -164,10 +164,29 @@ Android (no Windows é bloqueada pelo driver da porta COM).
 ## Estrutura
 
 ```
-index.html         aplicativo (arquivo único, sem dependências, funciona offline)
-testar-pinpad.ps1  testador por linha de comando (Windows)
-PROTOCOLO.md       especificação do protocolo (comandos confirmados + bytes)
+index.html                    aplicativo web (arquivo único, sem dependências, funciona offline)
+testar-pinpad.ps1             testador por linha de comando (Windows)
+android/                      app nativo Android (USB host API) — ver android/README.md
+dist/teste-pinpad-ppc930.apk  APK pronto para instalar no celular
+PROTOCOLO.md                  especificação do protocolo (comandos confirmados + bytes)
 ```
+
+## App nativo para Android
+
+Em vários celulares o **navegador não consegue** assumir o pinpad: o Android vincula o driver
+nativo do kernel à interface CDC e o WebUSB não tem como desvincular (`Unable to claim interface`).
+Um app nativo resolve, porque a USB host API do Android tem `claimInterface(iface, force = true)`.
+
+Por isso existe o app em [`android/`](android/README.md) — mesmo protocolo, mesmos testes, e o
+APK pronto em `dist/teste-pinpad-ppc930.apk` (instale com cabo OTG + permissão de fontes
+desconhecidas).
+
+| Onde | Caminho | Status |
+|---|---|---|
+| PC (Windows/Linux/macOS) | Web Serial no navegador | ✅ funciona |
+| Android — navegador | WebUSB | ⚠️ depende do aparelho (kernel pode segurar a interface) |
+| Android — app nativo | USB host API + `claimInterface(force)` | ✅ caminho recomendado |
+
 
 ## Licença
 

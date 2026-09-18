@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Gertec: VID 0x1753 = 5971 ; PPC930 PID 0xC902 = 51458 -->
+<resources>
+    <usb-device vendor-id="5971" />
+</resources>
