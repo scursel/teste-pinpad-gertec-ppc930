@@ -47,7 +47,7 @@ tudo com comandos documentados em [PROTOCOLO.md](PROTOCOLO.md) e validados em ha
 | **monitorar chip** | Repete a consulta 1×/s (útil para inserir/remover o cartão e ver mudar) | A etiqueta muda em ~1 s |
 | **Info (MT03 / PP03)** | Lê nº de série, modelo, firmware e RTC | Campos preenchidos |
 | **2 · Enviar ao display** | Escreve o texto no LCD (`MK10`) | O LCD do pinpad mostra o texto |
-| **3 · Teste completo** | Roda `MT10`, `MT03`, `MK10`, `SC02`, `MS05` e confere ACK | `PINPAD OK` se todos respondem |
+| **3 · Teste completo** | Roda `MT10`, `MT03`, `MK10`, `SC02` e confere ACK | `PINPAD OK` se todos respondem |
 
 ### ⚠️ A ordem importa na tarja
 
@@ -131,6 +131,7 @@ powershell -ExecutionPolicy Bypass -File .\testar-pinpad.ps1 -Port COM7 -Chip
 | Sintoma | Causa provável | O que fazer |
 |---|---|---|
 | `Access denied` ao conectar | No **Windows**, o device está preso ao driver da porta COM (`usbser`); o WebUSB exige driver WinUSB | Use o transporte **serial** (é o padrão no PC). WebUSB ali só serve no Android/Linux |
+| `Unable to claim interface` **no celular** | O Android reservou o pinpad (classe CDC) para o driver nativo do kernel e não libera para o navegador | Sem contorno pelo navegador nesse aparelho: caminho nativo é APK (USB host API) ou SDK da Gertec. Vale testar outro celular — o comportamento varia por fabricante |
 | `...a porta está em uso` / `Failed to open serial port` | Outro programa segurando a COM (app Gertec, monitor serial, ou o próprio script PowerShell) | Feche o outro programa e conecte de novo |
 | Tarja não preenche as trilhas | O cartão passou **antes** de armar, ou a tarja está suja/riscada | Clique em **Ler tarja** e passe o cartão **durante** a janela |
 | Chip não acusa presença | Cartão mal inserido / leitor com sujeira | Insira até o fim; limpe o contato dourado |

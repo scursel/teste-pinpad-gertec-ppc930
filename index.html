@@ -186,7 +186,10 @@ function mensagemErro(e) {
   const msg = String(e && e.message ? e.message : e);
   if (/access denied/i.test(msg))
     return msg + " — no Windows o pinpad fica preso ao driver da porta COM; use o modo serial (Web Serial). No Android use USB com adaptador OTG.";
-  if (/claim/i.test(msg)) return msg + " — feche outros programas que estejam usando a porta do pinpad.";
+  if (/claim/i.test(msg))
+    return msg + " — o sistema operacional reservou o pinpad para o driver nativo e o navegador não consegue assumir."
+      + " No Android isso é limite do WebUSB com aparelhos CDC: instale o APK nativo (USB host API) ou use o SDK da Gertec."
+      + " No PC use o modo serial (Web Serial).";
   if (/No port selected|No device selected|cancel/i.test(msg)) return msg + " — nenhum dispositivo escolhido na lista.";
   if (/Failed to open serial port|Access denied to the port|NetworkError/i.test(msg))
     return msg + " — a porta está em uso por outro programa (feche o app Gertec / monitores seriais).";
@@ -241,10 +244,18 @@ async function abrirUSB() {
 
 async function conectar() {
   const pref = $("selTransport").value;
-  const escolhido = pref === "auto" ? (navigator.serial ? "serial" : "usb") : pref;
+  let escolhido = pref === "auto" ? (navigator.serial ? "serial" : "usb") : pref;
   try {
-    if (escolhido === "serial") { if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador"); await abrirSerial(); }
-    else { if (!navigator.usb) throw new Error("WebUSB indisponível neste navegador"); await abrirUSB(); }
+    // lembra o transporte que funcionou (evita tentar serial primeiro e falhar sempre no Android)
+    if (window.__transporteOk) escolhido = window.__transporteOk;
+    if (escolhido === "serial") {
+      if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador");
+      await abrirSerial();
+    } else {
+      if (!navigator.usb) throw new Error("WebUSB indisponível neste navegador");
+      await abrirUSB();
+    }
+    window.__transporteOk = escolhido;
   } catch (e) {
     uiDesconectado();
     const msg = mensagemErro(e);
