@@ -7,9 +7,14 @@ Abre direto no navegador, sem instalar nada:
 | Onde você roda | Como fala com o pinpad | Requisito |
 |---|---|---|
 | **PC** (Windows / Linux / macOS) | **Web Serial** — abre a porta COM/serial | Chrome ou Edge |
-| **Celular Android** | **WebUSB** — fala direto com o USB do device | Chrome + cabo OTG |
+| **Celular Android** | **App nativo (APK)** — USB host API | cabo OTG |
 
 **Aplicativo online:** <https://scursel.github.io/teste-pinpad-gertec-ppc930/>
+
+> ⚠️ **No celular o navegador não funciona.** O Android reserva a interface USB deste pinpad para o
+> driver nativo do kernel (`cdc_acm`) e o WebUSB não tem como desvincular — a conexão falha com
+> `Unable to claim interface`. A própria página detecta o celular, avisa e oferece o APK. Use o app
+> nativo (veja [android/](android/README.md)); o navegador é o caminho no PC.
 
 O app testa **display, tarja magnética, leitor de chip, identificação e integridade do protocolo** —
 tudo com comandos documentados em [PROTOCOLO.md](PROTOCOLO.md) e validados em hardware real
@@ -19,12 +24,16 @@ tudo com comandos documentados em [PROTOCOLO.md](PROTOCOLO.md) e validados em ha
 
 ## Uso rápido
 
-### No celular (Android + Chrome)
+### No celular (Android) — app nativo
 
-1. Ligue o pinpad no celular com um **adaptador OTG** (USB-C → USB-A/B).
-2. Abra `https://scursel.github.io/teste-pinpad-gertec-ppc930/` no **Chrome**.
-3. Toque em **1 · Conectar PIN pad** → escolha **`PPC930 Pinpad Terminal`**.
-4. Use os botões de teste (veja abaixo).
+1. Baixe `dist/teste-pinpad-ppc930.apk` (ou use o link no aviso da página).
+2. Ligue o pinpad no celular com um **adaptador OTG** (USB-C → USB-A/B).
+3. Instale o APK — autorize "fontes desconhecidas" quando o Android pedir.
+4. Abra o app → **1 · Conectar** → aceite o diálogo de permissão USB do Android.
+5. Use os botões de teste (veja abaixo).
+
+> O comportamento do WebUSB varia por fabricante, então vale tentar outro aparelho — mas o caminho
+> recomendado no celular é o app nativo. Veja [android/README.md](android/README.md).
 
 ### No PC (Chrome/Edge)
 

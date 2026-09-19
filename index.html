@@ -45,12 +45,39 @@
   .pill.off{background:#12151c;color:var(--mut)}
   pre#log{margin:0;max-height:40vh;overflow:auto;font:12.5px/1.5 ui-monospace,Consolas,monospace;white-space:pre-wrap;word-break:break-word}
   .L{color:var(--mut)} .S{color:var(--acc)} .G{color:var(--ok)} .R{color:var(--bad)} .Y{color:var(--warn)}
+  .aviso{border-color:var(--warn);background:rgba(245,158,11,.10)}
+  .aviso h2{color:var(--warn)}
+  .aviso p{margin:0 0 10px;font-size:13.5px}
+  .aviso p:last-child{margin:0}
+  .aviso .mut{color:var(--mut);font-size:12.5px}
+  .aviso code{background:#0c0e13;padding:1px 5px;border-radius:5px;font-size:12px;word-break:break-all}
+  a.btn{display:block;text-align:center;min-height:46px;padding:13px 14px;border-radius:11px;
+        background:var(--warn);color:#1a1200;font-weight:700;text-decoration:none;margin:0 0 10px}
 </style>
 </head>
 <body>
 
 <h1>Teste PIN pad Gertec PPC930</h1>
 <p class="sub">STX | LEN | CMD | [param] | 0x1D | dados | ETX | XOR</p>
+
+<div class="card aviso" id="avisoCelular" hidden>
+  <h2>⚠️ Neste aparelho o navegador não consegue assumir o pinpad</h2>
+  <p>O sistema operacional reserva a interface USB do PPC930 para o driver nativo do kernel
+     (<code>cdc_acm</code>) e o WebUSB não tem como desvincular — a conexão falha com
+     <code>Unable to claim interface</code>.</p>
+  <a class="btn" href="dist/teste-pinpad-ppc930.apk" download>⬇️ Baixar o app nativo (APK)</a>
+  <p class="mut">O APK usa a USB host API do Android, que consegue desvincular o driver
+     (<code>claimInterface(force = true)</code>): mesmo protocolo, mesmos testes. Ligue o pinpad
+     com cabo OTG, instale o APK e autorize "fontes desconhecidas".
+     <b>No PC (Windows, Linux ou macOS) o navegador funciona</b> — lá o pinpad aparece como porta COM.</p>
+</div>
+
+<div class="card" id="avisoSemSuporte" hidden>
+  <h2>Este navegador não fala com USB nem com porta serial</h2>
+  <p>Use <b>Chrome ou Edge no PC</b> (Windows, Linux ou macOS) — no computador o pinpad aparece
+     como porta COM e a conexão funciona pelo modo serial.</p>
+  <p class="mut">No iPhone/iPad não há caminho: o Safari não expõe WebUSB nem Web Serial.</p>
+</div>
 
 <div class="card">
   <div class="row">
@@ -282,6 +309,12 @@ async function conectar() {
     const msg = mensagemErro(e);
     log("falha ao conectar: " + msg, "R");
     verdict("falha na conexão: " + msg, "bad");
+    // erro clássico do driver CDC: garante o aviso com o link do APK, mesmo se a
+    // detecção de celular não pegou (ex.: tablet, Linux, ou transporte USB forçado)
+    if (/claim/i.test(msg)) {
+      $("avisoCelular").hidden = false;
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
   }
 }
 
@@ -552,6 +585,28 @@ async function testeCompleto() {
         : `${ok}/${casos.length} testes passaram - comportamento parcial`, ok === casos.length ? "ok" : ok === 0 ? "bad" : "warn");
 }
 
+/* ---------- suporte do navegador ---------- */
+// Roda ANTES da fiação dos botões de propósito: o aviso de celular é a informação mais
+// importante da página, e não pode deixar de aparecer porque algo abaixo lançou.
+const temSerial = !!navigator.serial, temUsb = !!navigator.usb;
+const soUsb = temUsb && !temSerial;   // celular: o Web Serial não existe no Android
+if (!temSerial && !temUsb) {
+  $("avisoSemSuporte").hidden = false;
+  verdict("este navegador não fala com USB nem com porta serial", "bad");
+  log("Use Chrome/Edge no PC (Windows, Linux ou macOS).", "R");
+} else {
+  log(`navegador: Web Serial ${temSerial ? "sim" : "não"} · WebUSB ${temUsb ? "sim" : "não"}`);
+  if (temSerial && !temUsb) $("selTransport").value = "serial";
+  if (soUsb) {
+    // avisa ANTES de tentar: no Android o WebUSB falha com "Unable to claim interface"
+    $("avisoCelular").hidden = false;
+    $("selTransport").value = "usb";
+    log("celular detectado: o WebUSB não consegue assumir o PPC930 (driver CDC do kernel).", "Y");
+    log("O caminho aqui é o app nativo — veja o aviso no topo da página.", "Y");
+  }
+  log("Ligue o pinpad e toque em Conectar." + (temSerial ? " No PC: escolha a COM do pinpad na lista." : ""));
+}
+
 /* ---------- UI ---------- */
 // toda operação passa por exclusivo(): uma por vez na porta, e o monitor de chip volta sozinho
 const R = e => log("erro: " + mensagemErro(e), "R");
@@ -563,18 +618,7 @@ $("btnMsr").onclick = () => exclusivo("tarja", lerTarja).catch(R);
 $("btnChip").onclick = () => exclusivo("chip", () => checarChip(false)).catch(R);
 $("btnInfo").onclick = () => exclusivo("info", infoPinpad).catch(R);
 $("chkPoll").onchange = e => { if (e.target.checked) iniciarPoll(); else pararPoll(); };
-navigator.usb?.addEventListener("disconnect", e => { if (modo === "usb" && dev && e.device === dev) desconectar(); });
-
-const temSerial = !!navigator.serial, temUsb = !!navigator.usb;
-if (!temSerial && !temUsb) {
-  verdict("sem Web Serial e sem WebUSB neste navegador", "bad");
-  log("Use Chrome/Edge no PC ou Chrome no Android.", "R");
-} else {
-  log(`navegador: Web Serial ${temSerial ? "sim" : "não"} · WebUSB ${temUsb ? "sim" : "não"}`);
-  if (temSerial && !temUsb) $("selTransport").value = "serial";
-  if (!temSerial && temUsb) $("selTransport").value = "usb";
-  log("Ligue o pinpad e toque em Conectar." + (temSerial ? " No PC: escolha a COM do pinpad na lista." : ""));
-}
+navigator.usb?.addEventListener?.("disconnect", e => { if (modo === "usb" && dev && e.device === dev) desconectar(); });
 </script>
 </body>
 </html>
