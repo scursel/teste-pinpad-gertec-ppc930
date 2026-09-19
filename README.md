@@ -11,6 +11,9 @@ Abre direto no navegador, sem instalar nada:
 
 **Aplicativo online:** <https://scursel.github.io/teste-pinpad-gertec-ppc930/>
 
+📱 **App Android (APK):** **[baixar a última versão](https://github.com/scursel/teste-pinpad-gertec-ppc930/releases/latest/download/teste-pinpad-ppc930.apk)**
+· [todas as versões](https://github.com/scursel/teste-pinpad-gertec-ppc930/releases)
+
 > ⚠️ **No celular o navegador não funciona.** O Android reserva a interface USB deste pinpad para o
 > driver nativo do kernel (`cdc_acm`) e o WebUSB não tem como desvincular — a conexão falha com
 > `Unable to claim interface`. A própria página detecta o celular, avisa e oferece o APK. Use o app
@@ -26,7 +29,8 @@ tudo com comandos documentados em [PROTOCOLO.md](PROTOCOLO.md) e validados em ha
 
 ### No celular (Android) — app nativo
 
-1. Baixe `dist/teste-pinpad-ppc930.apk` (ou use o link no aviso da página).
+1. Baixe o APK: **[última versão](https://github.com/scursel/teste-pinpad-gertec-ppc930/releases/latest/download/teste-pinpad-ppc930.apk)**
+   (ou `dist/teste-pinpad-ppc930.apk`, ou o link no aviso da página).
 2. Ligue o pinpad no celular com um **adaptador OTG** (USB-C → USB-A/B).
 3. Instale o APK — autorize "fontes desconhecidas" quando o Android pedir.
 4. Abra o app → **1 · Conectar** → aceite o diálogo de permissão USB do Android.
