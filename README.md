@@ -33,6 +33,7 @@ tudo com comandos documentados em [PROTOCOLO.md](PROTOCOLO.md) e validados em ha
    (ou `dist/teste-pinpad-ppc930.apk`, ou o link no aviso da página).
 2. Ligue o pinpad no celular com um **adaptador OTG** (USB-C → USB-A/B).
 3. Instale o APK — autorize "fontes desconhecidas" quando o Android pedir.
+   *Atualizando da v1.0?* Desinstale a versão antiga antes (a assinatura mudou).
 4. Abra o app → **1 · Conectar** → aceite o diálogo de permissão USB do Android.
 5. Use os botões de teste (veja abaixo).
 
@@ -59,7 +60,7 @@ tudo com comandos documentados em [PROTOCOLO.md](PROTOCOLO.md) e validados em ha
 | **🔌 Checar chip (SC02)** | Consulta a leitora de chip | Etiqueta **`chip: PRESENTE`** / `ausente` |
 | **monitorar chip** | Repete a consulta 1×/s (útil para inserir/remover o cartão e ver mudar) | A etiqueta muda em ~1 s |
 | **Info (MT03 / PP03)** | Lê nº de série, modelo, firmware e RTC | Campos preenchidos |
-| **2 · Enviar ao display** | Escreve o texto no LCD (`MK10`) | O LCD do pinpad mostra o texto |
+| **2 · Enviar ao display** | Escreve o texto no LCD (`MK10`) — até 16 caracteres, acentos são removidos | O LCD do pinpad mostra o texto |
 | **3 · Teste completo** | Roda `MT10`, `MT03`, `MK10`, `SC02` e confere ACK | `PINPAD OK` se todos respondem |
 
 ### ⚠️ A ordem importa na tarja
@@ -74,6 +75,16 @@ da passada.
 
 Se você passar o cartão *antes* de armar, o pinpad apita mas não entrega os dados — e o app
 corretamente não mostra trilha nenhuma.
+
+Se o pinpad **não responder** ao `MS05`, o app avisa "leitor não armado" na hora, em vez de
+ficar esperando o cartão.
+
+### 🔒 Dados do cartão
+
+As trilhas aparecem com o **número do cartão (PAN) mascarado** — `6 primeiros + *** + 4 últimos`,
+ex.: `411111******1111` — no app web, no app Android e no script PowerShell. O payload bruto do
+evento `MS06` não é exibido nem gravado no log. No script PowerShell, `-Completo` mostra tudo
+(use só com cartão de teste).
 
 ---
 
@@ -180,9 +191,23 @@ Android (no Windows é bloqueada pelo driver da porta COM).
 index.html                    aplicativo web (arquivo único, sem dependências, funciona offline)
 testar-pinpad.ps1             testador por linha de comando (Windows)
 android/                      app nativo Android (USB host API) — ver android/README.md
-dist/teste-pinpad-ppc930.apk  APK pronto para instalar no celular
+dist/teste-pinpad-ppc930.apk  APK pronto para instalar no celular (cópia do último Release)
 PROTOCOLO.md                  especificação do protocolo (comandos confirmados + bytes)
+CHANGELOG.md                  o que mudou em cada versão
+docs/plans/                   planos de trabalho (ex.: correções da auditoria)
+.github/workflows/android.yml CI: testes JVM + build do APK; tag v* publica o Release
 ```
+
+## Versões e publicação do APK
+
+O histórico está em [CHANGELOG.md](CHANGELOG.md). Para publicar uma versão nova:
+
+1. Suba `versionCode`/`versionName` em `android/app/build.gradle.kts` e anote em `CHANGELOG.md`.
+2. Crie e envie a tag: `git tag v1.2 && git push origin v1.2`.
+3. O GitHub Actions roda os testes, compila o APK e cria o Release com o arquivo
+   `teste-pinpad-ppc930.apk` — o link "última versão" deste README passa a apontar para ele.
+
+Assinatura: veja [android/README.md](android/README.md#assinatura-release).
 
 ## App nativo para Android
 

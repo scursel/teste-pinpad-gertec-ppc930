@@ -55,10 +55,9 @@ class PinpadUsb(private val activity: Activity) {
 
     /** Abre o dispositivo: pede permissão, reivindica a interface COM FORÇA e acha os endpoints bulk. */
     fun abrir(log: (String) -> Unit): Boolean {
+        if (connection != null) fechar()
         val dev = listarGertec().firstOrNull()
-            ?: manager.deviceList.values.firstOrNull { it.vendorId == VID_GERTEC }
-            ?: manager.deviceList.values.firstOrNull()
-            ?: run { log("nenhum dispositivo USB encontrado"); return false }
+            ?: run { log("nenhum pinpad Gertec (VID 1753) encontrado"); return false }
         device = dev
         log("dispositivo: ${dev.manufacturerName} ${dev.productName} VID=${"%04X".format(dev.vendorId)} PID=${"%04X".format(dev.productId)}")
         log("configs=${dev.configurationCount} interfaces=${dev.interfaceCount}")
@@ -75,9 +74,13 @@ class PinpadUsb(private val activity: Activity) {
             val reg = if (Build.VERSION.SDK_INT >= 33) Context.RECEIVER_NOT_EXPORTED else 0
             if (Build.VERSION.SDK_INT >= 33) activity.registerReceiver(rec, IntentFilter(ACTION_PERM), reg)
             else activity.registerReceiver(rec, IntentFilter(ACTION_PERM))
-            manager.requestPermission(dev, pi)
-            var espera = 0
-            while (!manager.hasPermission(dev) && espera < 30000) { Thread.sleep(200); espera += 200 }
+            try {
+                manager.requestPermission(dev, pi)
+                var espera = 0
+                while (!manager.hasPermission(dev) && espera < 30000) { Thread.sleep(200); espera += 200 }
+            } finally {
+                try { activity.unregisterReceiver(rec) } catch (_: Exception) {}
+            }
             if (!manager.hasPermission(dev)) { log("permissão não concedida"); return false }
             log("permissão USB concedida")
         }

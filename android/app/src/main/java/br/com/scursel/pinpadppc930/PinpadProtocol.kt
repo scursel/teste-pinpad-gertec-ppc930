@@ -39,6 +39,7 @@ object PinpadProtocol {
         frame.add(0)                         // LEN provisorio
         frame.addAll(body)
         frame.add(ETX.toByte())
+        require(frame.size + 1 <= 255) { "frame grande demais" }
         frame[1] = (frame.size + 1).toByte() // LEN = total (inclui o checksum)
         val arr = frame.toByteArray()
         return arr + xor(arr, 0, arr.size)
@@ -69,6 +70,7 @@ object PinpadProtocol {
             if (bytes[i].toInt() and 0xFF != STX) continue
             if (i + 2 > bytes.size) return null
             val len = bytes[i + 1].toInt() and 0xFF
+            if (len < 8) continue              // 0x02 solto no lixo: nao e um frame valido
             if (i + len > bytes.size) return null
             val f = bytes.copyOfRange(i, i + len)
             val calc = xor(f, 0, f.size - 1)
@@ -116,4 +118,11 @@ object PinpadProtocol {
         buildString { for (b in bytes) { val v = b.toInt() and 0xFF; if (v in 32..126) append(v.toChar()) } }
 
     fun hex(bytes: ByteArray): String = bytes.joinToString(" ") { String.format("%02X", it) }
+
+    /** Mascara PANs em texto: mantem os 6 primeiros e os 4 ultimos digitos de cada run de 13+ digitos. */
+    fun mascararPan(s: String): String =
+        Regex("\\d{13,}").replace(s) { m ->
+            val d = m.value
+            d.substring(0, 6) + "*".repeat(d.length - 10) + d.substring(d.length - 4)
+        }
 }

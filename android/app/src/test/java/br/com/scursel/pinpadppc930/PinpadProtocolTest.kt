@@ -80,4 +80,41 @@ class PinpadProtocolTest {
         assertEquals(10, f[1].toInt() and 0xFF)   // LEN = total
         assertEquals(PinpadProtocol.STX, f[0].toInt() and 0xFF)
     }
+
+    @Test
+    fun `mascara PAN mantendo os 6 primeiros e os 4 ultimos digitos`() {
+        assertEquals(
+            "%B411111******1111^NOME/X^3210201",
+            PinpadProtocol.mascararPan("%B4111111111111111^NOME/X^3210201")
+        )
+    }
+
+    @Test
+    fun `mascara PAN nao mexe em runs curtos de digitos`() {
+        assertEquals("12345", PinpadProtocol.mascararPan("12345"))
+    }
+
+    @Test
+    fun `mascara PAN com run de 20 digitos mantem 6 mais 4`() {
+        val entrada = "12345678901234567890"
+        val esperado = "123456" + "*".repeat(10) + "7890"
+        assertEquals(esperado, PinpadProtocol.mascararPan(entrada))
+    }
+
+    @Test
+    fun `parseFrame pula STX solto no lixo e acha o frame valido seguinte`() {
+        val lixo = byteArrayOf(0x02, 0x00, 0x05)
+        val valido = PinpadProtocol.buildFrameDeResposta("SC03", "01")
+        val bytes = lixo + valido
+        val fr = PinpadProtocol.parseFrame(bytes)
+        assertNotNull(fr)
+        assertEquals("SC03", fr!!.cmd)
+        assertEquals('1', PinpadProtocol.ascii(fr.payload).last())
+    }
+
+    @Test(expected = IllegalArgumentException::class)
+    fun `buildFrame recusa frame maior que 255 bytes`() {
+        val dadosGrandes = "A".repeat(250)
+        PinpadProtocol.buildFrame("MK10", "2", dadosGrandes)
+    }
 }

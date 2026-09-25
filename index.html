@@ -65,7 +65,7 @@
   <p>O sistema operacional reserva a interface USB do PPC930 para o driver nativo do kernel
      (<code>cdc_acm</code>) e o WebUSB não tem como desvincular — a conexão falha com
      <code>Unable to claim interface</code>.</p>
-  <a class="btn" href="dist/teste-pinpad-ppc930.apk" download>⬇️ Baixar o app nativo (APK)</a>
+  <a class="btn" href="https://github.com/scursel/teste-pinpad-gertec-ppc930/releases/latest/download/teste-pinpad-ppc930.apk">⬇️ Baixar o app nativo (APK)</a>
   <p class="mut">O APK usa a USB host API do Android, que consegue desvincular o driver
      (<code>claimInterface(force = true)</code>): mesmo protocolo, mesmos testes. Ligue o pinpad
      com cabo OTG, instale o APK e autorize "fontes desconhecidas".
@@ -169,6 +169,7 @@ function buildFrame(cmd, param, data) {
   if (param !== undefined && param !== null) body.push(...enc.encode(String(param)));
   if (data !== undefined) body.push(SEP, ...enc.encode(data));
   const f = [STX, 0, ...body, ETX];
+  if (f.length + 1 > 255) throw new Error("frame grande demais");
   f[1] = f.length + 1;
   f.push(xorChk(f));
   return new Uint8Array(f);
@@ -184,6 +185,11 @@ function parseFrame(bytes) {
 }
 const ascii = u8 => [...u8].map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : "").join("");
 
+// mascara PAN: mantem os 6 primeiros e os 4 ultimos digitos de qualquer sequencia com 13+ digitos
+function mascararPan(s) {
+  return String(s).replace(/\d{13,}/g, d => d.slice(0, 6) + "*".repeat(d.length - 10) + d.slice(-4));
+}
+
 /* ---------- estado do transporte ---------- */
 let modo = null;                 // "serial" | "usb"
 let dev = null, epIn = null, epOut = null, iface = null;   // WebUSB
@@ -191,6 +197,7 @@ let port = null, writer = null, reader = null, rxBuf = [];  // Web Serial
 let pollTimer = null;
 let ocupado = false;             // uma operação por vez na porta: nada mais pode consumir bytes
 let cancelar = false;            // desconectar interrompe esperas longas (tarja)
+let usbPend = null;              // transferência WebUSB pendente (bulkTransferIn não tem timeout nativo)
 
 /* ---------- portão de I/O ---------- */
 // O pinpad tem UMA fila de bytes. Sem isto, o poll do chip dispara no meio de outra
@@ -222,6 +229,7 @@ function uiConectado(detalhe) {
 function uiDesconectado() {
   modo = null; dev = null; epIn = epOut = null; iface = null;
   port = null; writer = null; reader = null; rxBuf = [];
+  usbPend = null;
   $("chkPoll").checked = false; pararPoll();
   for (const id of ["btnMsr", "btnChip", "btnInfo", "btnDisplay", "btnSelf", "btnDisconnect"]) $(id).disabled = true;
   $("btnConnect").disabled = false;
@@ -340,10 +348,18 @@ async function desconectar() {
 /* ---------- I/O cru ---------- */
 async function rxChunk(timeoutMs) {
   if (modo === "usb") {
+    // bulkTransferIn(endpointNumber, length) não aceita timeout: sem isto, uma leitura
+    // sem dados fica pendente para sempre. Mantemos UMA transferência pendente entre
+    // chamadas e corremos contra um sentinela de tempo, para não perder o dado quando
+    // ele chega depois do timeout desta chamada.
+    const TIMEOUT = Symbol();
     try {
-      const r = await dev.bulkTransferIn(epIn.endpointNumber, 128, Math.max(40, timeoutMs));
+      if (!usbPend) usbPend = dev.bulkTransferIn(epIn.endpointNumber, 128);
+      const r = await Promise.race([usbPend, sleep(Math.max(40, timeoutMs)).then(() => TIMEOUT)]);
+      if (r === TIMEOUT) return new Uint8Array();
+      usbPend = null;
       return (r.status === "ok" && r.data) ? r.data : new Uint8Array();
-    } catch (e) { return new Uint8Array(); }
+    } catch (e) { usbPend = null; return new Uint8Array(); }
   }
   const t0 = performance.now();
   while (rxBuf.length === 0 && performance.now() - t0 < timeoutMs) await sleep(15);
@@ -457,9 +473,19 @@ async function lerTarja() {
     log("→ MS05 (arma o leitor de tarja)  " + hex(f), "S");
     await tx(f);
     const ackBytes = await rxChunk(1500);
-    if (ackBytes.length && ackBytes[0] === NAK) {
+    if (!ackBytes.length) {
+      log("sem resposta ao MS05", "R");
+      verdict("o pinpad não respondeu ao MS05 — leitor não armado", "bad");
+      return;
+    }
+    if (ackBytes[0] === NAK) {
       log("← NAK ao armar o leitor", "R");
       verdict("leitor recusou armar (NAK)", "bad");
+      return;
+    }
+    if (ackBytes[0] !== ACK) {
+      log("← resposta inesperada ao MS05 [" + hex(ackBytes) + "]", "R");
+      verdict("resposta inesperada ao MS05 — leitor não armado", "bad");
       return;
     }
     log("← ACK - leitor armado, aguardando o cartao", "G");
@@ -476,9 +502,10 @@ async function lerTarja() {
     }
     if (frame && frame.payload.length > 6) {
       const t = extrairTrilhas(frame);
+      t["1"] = mascararPan(t["1"]); t["2"] = mascararPan(t["2"]); t["3"] = mascararPan(t["3"]);
       mostrarTrilhas(t);
-      $("rawResp").textContent = hex(frame.payload);
-      log("← EVENTO " + frame.cmd + " (cartão lido)  " + hex(frame.payload).slice(0, 60) + "…", "G");
+      $("rawResp").textContent = "(oculto: dados do cartão)";
+      log("← EVENTO " + frame.cmd + " (cartão lido)  " + frame.payload.length + " byte(s)", "G");
       verdict("TARJA LIDA com sucesso", "ok");
     } else {
       log("nenhum cartão passou durante a escuta", "Y");
@@ -541,7 +568,9 @@ async function infoPinpad() {
 
 /* ---------- display e teste básico ---------- */
 async function enviarDisplay() {
-  const txt = $("txtMsg").value || "PINPAD OK";
+  let txt = ($("txtMsg").value || "").normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  txt = txt.replace(/[^\x20-\x7E]/g, "").slice(0, 16);   // linha do LCD: 16 caracteres
+  if (!txt) txt = "PINPAD OK";
   const r = await comando("MK10", "2", txt, 1500);
   verdict(r.ack === ACK ? 'display OK - o LCD deve mostrar "' + txt + '"' : "sem ACK ao escrever no display", r.ack === ACK ? "ok" : "warn");
 }

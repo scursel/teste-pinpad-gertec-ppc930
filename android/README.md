@@ -43,9 +43,36 @@ echo "sdk.dir=CAMINHO_DO_SEU_ANDROID_SDK" > local.properties
 
 No Windows use `.\gradlew.bat` no lugar de `./gradlew`.
 
-Os testes na JVM são 12, em dois arquivos:
+O GitHub Actions (`.github/workflows/android.yml`) roda os testes e o `assembleDebug` a cada push
+que mexe em `android/`, e publica o APK num Release quando uma tag `v*` é enviada.
 
-- `PinpadProtocolTest` (7) — enquadramento contra **bytes reais** do equipamento, inclusive o frame
+## Assinatura release
+
+A chave **nunca** vai para o repositório (`*.jks`/`*.keystore` estão no `.gitignore`).
+
+Local:
+
+```bash
+keytool -genkeypair -v -keystore pinpad-release.jks -alias pinpad -keyalg RSA -keysize 2048 -validity 10000
+export PINPAD_KEYSTORE=$PWD/pinpad-release.jks PINPAD_KEYSTORE_PASS=... PINPAD_KEY_ALIAS=pinpad PINPAD_KEY_PASS=...
+./gradlew assembleRelease          # app/build/outputs/apk/release/app-release.apk
+```
+
+No GitHub (Settings → Secrets and variables → Actions), crie `PINPAD_KEYSTORE_B64`
+(`base64 -w0 pinpad-release.jks`), `PINPAD_KEYSTORE_PASS`, `PINPAD_KEY_ALIAS` e `PINPAD_KEY_PASS`.
+Sem esses secrets o Release publica o APK de **debug** (instala normalmente, mas é depurável).
+
+> Guarde a chave com cuidado: um APK assinado com outra chave não atualiza o app instalado —
+> o usuário precisa desinstalar antes.
+
+## Dados do cartão
+
+As trilhas são exibidas com o PAN mascarado (`PinpadProtocol.mascararPan`: 6 primeiros + 4 últimos
+dígitos) e o payload do `MS06` não vai para o log.
+
+Os testes na JVM são 17, em dois arquivos:
+
+- `PinpadProtocolTest` (12) — máscara de PAN, `STX` solto, frame grande demais e enquadramento contra **bytes reais** do equipamento, inclusive o frame
   do exemplo oficial da Gertec (`MK10` + `PPC-800`) e os bytes que o PPC930 respondeu `ACK`
   (`MT03`, `SC02`+`0`, `MS05`, `MT10`). Nenhum dado de cartão real é usado.
 - `PortaoIoTest` (5) — o portão de I/O: só uma operação consome bytes por vez, o portão é liberado
