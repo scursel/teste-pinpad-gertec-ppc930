@@ -5,3 +5,6 @@ build/
 app/build/
 *.iml
 .idea/
+# chaves de assinatura nunca vao para o repositorio
+*.jks
+*.keystore
