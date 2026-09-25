@@ -12,9 +12,9 @@ Nenhum programa mostra o payload bruto (hex) do evento `MS06`.
 
 | # | Arquivo(s) | O quê | Executor |
 |---|---|---|---|
-| T1 | `index.html` | mascarar trilhas; não mostrar hex do MS06; MS05 sem resposta = falha; timeout real no WebUSB (`bulkTransferIn` não aceita timeout); limitar texto do display (32 chars, só ASCII) | modelo intermediário |
+| T1 | `index.html` | mascarar trilhas; não mostrar hex do MS06; MS05 sem resposta = falha; timeout real no WebUSB (`bulkTransferIn` não aceita timeout); limitar texto do display (16 chars — valor original do campo —, só ASCII) | modelo intermediário |
 | T2 | `testar-pinpad.ps1` | não imprimir hex do MS06 (só com `-Completo`); MS05 sem resposta = falha; `Mascarar` compatível com Windows PowerShell 5.1 | modelo barato |
-| T3 | `android/.../*.kt` + testes | `mascararPan()` + testes; `parseFrame` rejeita LEN < 8; MS05 sem resposta = falha; caixa do monitor sincronizada; limite do display; `abrir()` fecha conexão anterior, remove o receiver e só aceita VID Gertec | modelo intermediário |
+| T3 | `android/.../*.kt` + testes | `mascararPan()` + testes; `parseFrame` rejeita LEN < 8; MS05 sem resposta = falha; caixa do monitor sincronizada; limite do display (16); `abrir()` fecha conexão anterior, remove o receiver e só aceita VID Gertec | modelo intermediário |
 | T4 | `.github/workflows/android.yml`, `android/app/build.gradle.kts`, `android/gradlew` | CI rodando os testes JVM; assinatura release lida de variáveis de ambiente; bit executável do gradlew | coordenador |
 | T5 | todos | revisão do diff, verificação, commit e push | coordenador |
 
