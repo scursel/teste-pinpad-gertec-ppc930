@@ -99,6 +99,7 @@ class MainActivity : Activity() {
 
         val linha4 = LinearLayout(this)
         val texto = EditText(this); texto.setText("PINPAD OK"); texto.setHint("texto do display")
+        texto.filters = arrayOf(android.text.InputFilter.LengthFilter(16))
         linha4.addView(texto, peso(2f))
         linha4.addView(botao("Display") { enviarDisplay(texto.text.toString()) }, peso())
         raiz.addView(linha4)
@@ -163,6 +164,8 @@ class MainActivity : Activity() {
     private fun conectar() = tarefa {
         monitorando = false
         cancelar = false
+        runOnUiThread { if (::chkMonitor.isInitialized) chkMonitor.isChecked = false }
+        if (usb.conectado) usb.fechar()
         mostrarStatus("abrindo USB…")
         val ok = usb.abrir { log(it) }
         if (!ok) { mostrarStatus("falha ao conectar", false); return@tarefa }
@@ -256,7 +259,12 @@ class MainActivity : Activity() {
         mostrarStatus("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", null)
         trilhasTri.forEach { it.text = "-" }
         val (ack, _) = comando("MS05", timeoutMs = 1500)
+        if (ack == null) { mostrarStatus("o pinpad não respondeu ao MS05 — leitor não armado", false); return@tarefa }
         if (ack == PinpadProtocol.NAK) { mostrarStatus("leitor recusou armar (NAK)", false); return@tarefa }
+        if (ack != PinpadProtocol.ACK) {
+            mostrarStatus("o pinpad não confirmou o MS05 (byte ${"%02X".format(ack)}) — leitor não armado", false)
+            return@tarefa
+        }
         log("leitor armado - aguardando o cartão passar")
         var fr = esperarEvento("MS06", 90_000)
         if (cancelar) return@tarefa                       // desconectou durante a espera
@@ -269,7 +277,9 @@ class MainActivity : Activity() {
         if (fr != null && fr.payload.size > 6) {
             val t = PinpadProtocol.extrairTrilhas(fr.payload)
             runOnUiThread {
-                trilhasTri[0].text = t["1"]; trilhasTri[1].text = t["2"]; trilhasTri[2].text = t["3"]
+                trilhasTri[0].text = PinpadProtocol.mascararPan(t["1"] ?: "-")
+                trilhasTri[1].text = PinpadProtocol.mascararPan(t["2"] ?: "-")
+                trilhasTri[2].text = PinpadProtocol.mascararPan(t["3"] ?: "-")
             }
             log("EVENTO MS06 (cartão lido)")
             mostrarStatus("TARJA LIDA com sucesso", true)
@@ -300,6 +310,7 @@ class MainActivity : Activity() {
     }
 
     private fun checarChip() = tarefa {
+        if (!usb.conectado) { log("conecte primeiro"); return@tarefa }
         val (ack, fr) = comando("SC02", "0", timeoutMs = 1500, espera = "SC03")
         val presente = if (fr != null && fr.cmd == "SC03") {
             val s = PinpadProtocol.ascii(fr.payload)
@@ -351,6 +362,7 @@ class MainActivity : Activity() {
     }
 
     private fun infoPinpad() = tarefa {
+        if (!usb.conectado) { log("conecte primeiro"); return@tarefa }
         val (_, f1) = comando("MT03", timeoutMs = 2000, espera = "MT03")
         if (f1 != null && f1.cmd == "MT03") {
             val c = PinpadProtocol.camposInfo(f1.payload)
@@ -365,11 +377,17 @@ class MainActivity : Activity() {
     }
 
     private fun enviarDisplay(txt: String) = tarefa {
-        val (ack, _) = comando("MK10", "2", txt, timeoutMs = 1500)
-        mostrarStatus(if (ack == PinpadProtocol.ACK) "display OK - o LCD deve mostrar \"$txt\"" else "sem ACK no display", ack == PinpadProtocol.ACK)
+        if (!usb.conectado) { log("conecte primeiro"); return@tarefa }
+        val semAcento = java.text.Normalizer.normalize(txt, java.text.Normalizer.Form.NFD)
+            .replace(Regex("\\p{Mn}"), "")
+        val limpo = semAcento.filter { it.code in 0x20..0x7E }.take(16)   // linha do LCD: 16 caracteres
+        val texto = if (limpo.isBlank()) "PINPAD OK" else limpo
+        val (ack, _) = comando("MK10", "2", texto, timeoutMs = 1500)
+        mostrarStatus(if (ack == PinpadProtocol.ACK) "display OK - o LCD deve mostrar \"$texto\"" else "sem ACK no display", ack == PinpadProtocol.ACK)
     }
 
     private fun testeCompleto() = tarefa {
+        if (!usb.conectado) { log("conecte primeiro"); return@tarefa }
         // MS05 NÃO entra aqui: ele arma o leitor de tarja e o pinpad ignora os comandos seguintes
         val casos = listOf(
             Triple("MT10", null, "alive"),

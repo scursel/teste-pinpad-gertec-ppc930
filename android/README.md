@@ -43,9 +43,9 @@ echo "sdk.dir=CAMINHO_DO_SEU_ANDROID_SDK" > local.properties
 
 No Windows use `.\gradlew.bat` no lugar de `./gradlew`.
 
-Os testes na JVM são 12, em dois arquivos:
+Os testes na JVM são 17, em dois arquivos:
 
-- `PinpadProtocolTest` (7) — enquadramento contra **bytes reais** do equipamento, inclusive o frame
+- `PinpadProtocolTest` (12) — enquadramento contra **bytes reais** do equipamento, inclusive o frame
   do exemplo oficial da Gertec (`MK10` + `PPC-800`) e os bytes que o PPC930 respondeu `ACK`
   (`MT03`, `SC02`+`0`, `MS05`, `MT10`). Nenhum dado de cartão real é usado.
 - `PortaoIoTest` (5) — o portão de I/O: só uma operação consome bytes por vez, o portão é liberado
