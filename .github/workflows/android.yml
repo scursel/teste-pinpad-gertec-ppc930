@@ -7,6 +7,12 @@ on:
     paths: ["android/**", ".github/workflows/android.yml"]
   pull_request:
     paths: ["android/**", ".github/workflows/android.yml"]
+  # publicar pelo botao "Run workflow" (Actions) sem precisar enviar a tag
+  workflow_dispatch:
+    inputs:
+      versao:
+        description: "Tag do Release (ex.: v1.1) - criada no commit escolhido"
+        required: true
 
 jobs:
   testes:
@@ -30,7 +36,7 @@ jobs:
   # Com os secrets PINPAD_KEYSTORE_B64/PINPAD_KEYSTORE_PASS/PINPAD_KEY_ALIAS/PINPAD_KEY_PASS
   # o APK sai assinado em modo release; sem eles, sai o APK de debug (instalavel, mas debuggable).
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
     needs: testes
     runs-on: ubuntu-latest
     permissions:
@@ -64,6 +70,7 @@ jobs:
       - name: Publica o Release
         env:
           GH_TOKEN: ${{ github.token }}
+          VERSAO: ${{ inputs.versao || github.ref_name }}
         run: |
-          gh release create "$GITHUB_REF_NAME" ../teste-pinpad-ppc930.apk \
-            --title "$GITHUB_REF_NAME" --notes-file ../CHANGELOG.md --latest
+          gh release create "$VERSAO" ../teste-pinpad-ppc930.apk --target "$GITHUB_SHA" \
+            --title "$VERSAO" --notes-file ../CHANGELOG.md --latest

@@ -203,7 +203,8 @@ docs/plans/                   planos de trabalho (ex.: correções da auditoria)
 O histórico está em [CHANGELOG.md](CHANGELOG.md). Para publicar uma versão nova:
 
 1. Suba `versionCode`/`versionName` em `android/app/build.gradle.kts` e anote em `CHANGELOG.md`.
-2. Crie e envie a tag: `git tag v1.2 && git push origin v1.2`.
+2. Crie e envie a tag: `git tag v1.2 && git push origin v1.2` — ou, sem terminal, em
+   **Actions → android → Run workflow**, informando a versão (ex.: `v1.2`).
 3. O GitHub Actions roda os testes, compila o APK e cria o Release com o arquivo
    `teste-pinpad-ppc930.apk` — o link "última versão" deste README passa a apontar para ele.
 
