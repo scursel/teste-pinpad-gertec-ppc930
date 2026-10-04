@@ -216,9 +216,13 @@ class MainActivity : Activity() {
                     buf.subList(0, achado.offset + achado.tamanho).clear()
                     continue
                 }
-                log("← ${if (ack == PinpadProtocol.ACK) "ACK " else ""}${fr.cmd} " +
-                    (if (fr.payload.isNotEmpty()) "[${PinpadProtocol.hex(fr.payload)}] " + PinpadProtocol.ascii(fr.payload) else "") +
-                    (if (fr.badChecksum) " (checksum inválido!)" else ""))
+                if (fr.cmd == "MS06") {
+                    log("← MS06 (dados do cartão ocultos, ${fr.payload.size} bytes)")
+                } else {
+                    log("← ${if (ack == PinpadProtocol.ACK) "ACK " else ""}${fr.cmd} " +
+                        (if (fr.payload.isNotEmpty()) "[${PinpadProtocol.hex(fr.payload)}] " + PinpadProtocol.ascii(fr.payload) else "") +
+                        (if (fr.badChecksum) " (checksum inválido!)" else ""))
+                }
                 return Pair(ack, fr)
             }
             if (ack != null && ack != PinpadProtocol.ACK && ack != PinpadProtocol.EOT) break
@@ -256,18 +260,58 @@ class MainActivity : Activity() {
 
     private fun lerTarja() = tarefa {
         if (!usb.conectado) { log("conecte primeiro"); return@tarefa }
-        mostrarStatus("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", null)
         trilhasTri.forEach { it.text = "-" }
-        val (ack, _) = comando("MS05", timeoutMs = 1500)
-        if (ack == null) { mostrarStatus("o pinpad não respondeu ao MS05 — leitor não armado", false); return@tarefa }
-        if (ack == PinpadProtocol.NAK) { mostrarStatus("leitor recusou armar (NAK)", false); return@tarefa }
-        if (ack != PinpadProtocol.ACK) {
-            mostrarStatus("o pinpad não confirmou o MS05 (byte ${"%02X".format(ack)}) — leitor não armado", false)
+
+        mostrarStatus("armando o leitor de tarja (MS05)…", null)
+
+        usb.limpar()
+        val f = PinpadProtocol.buildFrame("MS05")
+        val hex = PinpadProtocol.hex(f)
+        log("→ MS05  $hex")
+        if (!usb.tx(f)) {
+            log("falha ao escrever na USB")
+            mostrarStatus("falha ao escrever na USB", false)
             return@tarefa
         }
-        log("leitor armado - aguardando o cartão passar")
-        var fr = esperarEvento("MS06", 90_000)
-        if (cancelar) return@tarefa                       // desconectou durante a espera
+
+        // Ler até 1500 ms para resposta ao MS05
+        var ack: Int? = null
+        var bufRestante = ByteArray(0)
+        var decorrido = 0
+
+        while (decorrido < 1500 && !cancelar) {
+            val chunk = usb.ler(150)
+            if (chunk.isNotEmpty()) {
+                ack = chunk[0].toInt() and 0xFF
+                bufRestante = if (chunk.size > 1) chunk.copyOfRange(1, chunk.size) else ByteArray(0)
+                break
+            } else {
+                decorrido += 150
+            }
+        }
+
+        // Processar resposta ao MS05
+        when {
+            ack == PinpadProtocol.NAK -> {
+                mostrarStatus("leitor recusou armar (NAK)", false)
+                return@tarefa
+            }
+            ack != null && ack != PinpadProtocol.ACK -> {
+                mostrarStatus("o pinpad não confirmou o MS05 (byte ${"%02X".format(ack)}) — leitor não armado", false)
+                return@tarefa
+            }
+            ack == null -> {
+                log("sem resposta ao MS05 - o leitor pode ja estar armado de uma tentativa anterior; sigo escutando")
+                mostrarStatus("sem confirmação do MS05 — se o leitor já estava armado, passe o cartão agora", null)
+            }
+            ack == PinpadProtocol.ACK -> {
+                log("leitor armado - aguardando o cartão passar")
+                mostrarStatus("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", null)
+            }
+        }
+
+        var fr = esperarEvento("MS06", 90_000, bufRestante)
+        if (cancelar) return@tarefa
         if (fr == null) {
             log("90 s sem cartão - continuo escutando (o leitor segue armado)")
             mostrarStatus("leitor ainda armado - pode passar o cartão", null)
@@ -294,8 +338,9 @@ class MainActivity : Activity() {
      * Descarta apenas os frames que não interessam, preservando o resto do buffer —
      * antes um buf.clear() podia jogar fora bytes que chegaram na mesma leitura.
      */
-    private fun esperarEvento(cmd: String, timeoutMs: Int): PinpadProtocol.Frame? {
+    private fun esperarEvento(cmd: String, timeoutMs: Int, inicial: ByteArray = ByteArray(0)): PinpadProtocol.Frame? {
         val buf = ArrayList<Byte>()
+        inicial.forEach { buf.add(it) }
         var decorrido = 0
         while (decorrido < timeoutMs && !cancelar) {
             val chunk = usb.ler(250)
@@ -392,11 +437,12 @@ class MainActivity : Activity() {
         val casos = listOf(
             Triple("MT10", null, "alive"),
             Triple("MT03", null, "nº de série"),
-            Triple("MK10", null, "display"),
+            Triple("MK10", "2", "display"),
             Triple("SC02", "0", "leitor de chip")
         )
         var ok = 0
         for ((cmd, param, nome) in casos) {
+            if (cancelar) return@tarefa
             val f = PinpadProtocol.buildFrame(cmd, param, if (cmd == "MK10") "TESTE OK" else null)
             usb.limpar()
             log("→ $nome  ${PinpadProtocol.hex(f)}")
@@ -415,6 +461,7 @@ class MainActivity : Activity() {
             log("   ${if (passou) "PASSOU" else "FALHOU"} - $nome")
             Thread.sleep(150)
         }
+        if (cancelar) return@tarefa
         log("resumo: $ok/${casos.size} testes passaram")
         mostrarStatus(
             when {

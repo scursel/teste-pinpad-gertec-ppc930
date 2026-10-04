@@ -178,12 +178,32 @@ function buildFrame(cmd, param, data) {
 function parseFrame(bytes) {
   if (bytes.length < 5 || bytes[0] !== STX) return null;
   const len = bytes[1];
+  if (len < 8) return null;  // A10: rejeita frames com LEN < 8
   if (len > bytes.length) return null;
   const f = bytes.slice(0, len);
   if (f[len - 1] !== xorChk(f.slice(0, len - 1))) return { cmd: "", payload: new Uint8Array(), badChk: true };
   return { cmd: String.fromCharCode(...f.slice(2, 6)), payload: f.slice(6, len - 2) };
 }
 const ascii = u8 => [...u8].map(b => (b >= 32 && b < 127) ? String.fromCharCode(b) : "").join("");
+
+// A10: busca um frame válido em qualquer posição do buffer
+function acharFrame(bytes) {
+  // Percorre CADA posição com 0x02
+  for (let i = 0; i < bytes.length; i++) {
+    if (bytes[i] !== STX) continue;
+    // Se não houver o byte de LEN ainda, retorna null
+    if (i + 1 >= bytes.length) return null;
+    const len = bytes[i + 1];
+    // Se LEN < 8, pula esse STX e continua procurando
+    if (len < 8) continue;
+    // Se o frame está incompleto, retorna null
+    if (i + len > bytes.length) return null;
+    // Tenta parsear a partir desta posição
+    const frame = parseFrame(new Uint8Array(bytes.slice(i)));
+    if (frame) return { frame, fim: i + len };
+  }
+  return null;
+}
 
 // mascara PAN: mantem os 6 primeiros e os 4 ultimos digitos de qualquer sequencia com 13+ digitos
 function mascararPan(s) {
@@ -301,8 +321,8 @@ async function conectar() {
   const pref = $("selTransport").value;
   let escolhido = pref === "auto" ? (navigator.serial ? "serial" : "usb") : pref;
   try {
-    // lembra o transporte que funcionou (evita tentar serial primeiro e falhar sempre no Android)
-    if (window.__transporteOk) escolhido = window.__transporteOk;
+    // A9: só usa __transporteOk se pref é "auto" (se escolheu serial/usb, respeita a escolha)
+    if (pref === "auto" && window.__transporteOk) escolhido = window.__transporteOk;
     cancelar = false;
     if (escolhido === "serial") {
       if (!navigator.serial) throw new Error("Web Serial indisponível neste navegador");
@@ -386,7 +406,7 @@ async function drenar() {
   for (let i = 0; i < 3; i++) {
     const c = await rxChunk(120);
     if (!c.length) break;
-    log("descartando " + c.length + " byte(s) pendentes: " + hex(c), "Y");
+    log("descartando " + c.length + " byte(s) pendentes", "Y");
   }
   rxBuf = [];
 }
@@ -404,12 +424,12 @@ async function comando(cmd, param, data, timeoutMs = 1500, esperaCmd = null) {
     const chunk = await rxChunk(150);
     if (chunk.length) bytes.push(...chunk);
     if (ack === null && bytes.length) ack = bytes[0];
-    const i = bytes.indexOf(STX);
-    if (i >= 0 && bytes.length >= i + 2 && bytes.length >= i + bytes[i + 1]) {
-      const cand = parseFrame(new Uint8Array(bytes.slice(i)));
+    const achado = acharFrame(bytes);  // A10: usa acharFrame
+    if (achado) {
+      const cand = achado.frame;
       if (cand && esperaCmd && cand.cmd !== esperaCmd) {
         log("   (ignorando resposta atrasada " + cand.cmd + ")", "Y");
-        bytes.splice(0, i + bytes[i + 1]);
+        bytes.splice(0, achado.fim);  // A10: usa achado.fim
         continue;
       }
       frame = cand;
@@ -417,27 +437,38 @@ async function comando(cmd, param, data, timeoutMs = 1500, esperaCmd = null) {
     }
     if (ack !== null && ack !== ACK && ack !== EOT) break;   // NAK: não vem mais nada
   }
-  if (frame) log("← " + (ack === ACK ? "ACK " : "") + frame.cmd + (frame.payload.length ? " [" + hex(frame.payload) + "] " + ascii(frame.payload) : "") + (frame.badChk ? "  (checksum inválido!)" : ""), "G");
+  // A2: oculta payload de MS06, não loga hex bruto
+  if (frame) {
+    let logMsg = "← " + (ack === ACK ? "ACK " : "") + frame.cmd;
+    if (frame.cmd === "MS06") {
+      logMsg += " (dados do cartão ocultos, " + frame.payload.length + " byte(s))";
+    } else if (frame.payload.length) {
+      logMsg += " [" + hex(frame.payload) + "] " + ascii(frame.payload);
+    }
+    if (frame.badChk) logMsg += "  (checksum inválido!)";
+    log(logMsg, "G");
+  }
   else if (ack === ACK) log("← ACK (06) sem dados", "G");
   else if (ack === NAK) log("← NAK (15) - comando rejeitado", "R");
   else if (ack === EOT) log("← EOT (04)", "Y");
-  else log("← sem resposta [" + hex(new Uint8Array(bytes)) + "]", "Y");
+  else log("← sem resposta (" + bytes.length + " byte(s))", "Y");  // A2: não mostra hex
   return { ack, frame, raw: new Uint8Array(bytes) };
 }
 
 /* ---------- leitura de tarja ---------- */
 // espera um frame espontâneo (o pinpad emite MS06 quando o cartão passa)
-async function esperarFrame(cmdEsperado, timeoutMs) {
-  const bytes = [];
+// A3: inicial = array de bytes iniciais com que o array começa (ex: bytes após ACK)
+async function esperarFrame(cmdEsperado, timeoutMs, inicial = []) {
+  const bytes = [...inicial];  // A3: começa com bytes iniciais se houver
   const t0 = performance.now();
   while (performance.now() - t0 < timeoutMs && !cancelar) {
     const chunk = await rxChunk(250);
     if (chunk.length) bytes.push(...chunk);
-    const i = bytes.indexOf(STX);
-    if (i >= 0 && bytes.length >= i + 2 && bytes.length >= i + bytes[i + 1]) {
-      const f = parseFrame(new Uint8Array(bytes.slice(i)));
+    const achado = acharFrame(bytes);  // A10: usa acharFrame
+    if (achado) {
+      const f = achado.frame;
       if (f && (!cmdEsperado || f.cmd === cmdEsperado)) return f;
-      if (f) bytes.splice(0, i + bytes[i + 1]);
+      if (f) bytes.splice(0, achado.fim);  // A10: usa achado.fim
     }
   }
   return null;
@@ -473,31 +504,37 @@ async function lerTarja() {
     log("→ MS05 (arma o leitor de tarja)  " + hex(f), "S");
     await tx(f);
     const ackBytes = await rxChunk(1500);
+    let inicial = [];  // A3: bytes após ACK para passar a esperarFrame
+
     if (!ackBytes.length) {
-      log("sem resposta ao MS05", "R");
-      verdict("o pinpad não respondeu ao MS05 — leitor não armado", "bad");
-      return;
-    }
-    if (ackBytes[0] === NAK) {
+      // A3: não retorna, apenas loga e continua escutando
+      log("sem resposta ao MS05 — o leitor pode já estar armado de uma tentativa anterior; sigo escutando", "Y");
+      verdict("sem confirmação do MS05 — se o leitor já estava armado, passe o cartão agora", "warn");
+    } else if (ackBytes[0] === NAK) {
       log("← NAK ao armar o leitor", "R");
       verdict("leitor recusou armar (NAK)", "bad");
       return;
-    }
-    if (ackBytes[0] !== ACK) {
-      log("← resposta inesperada ao MS05 [" + hex(ackBytes) + "]", "R");
+    } else if (ackBytes[0] !== ACK) {
+      // A3: mostra só o primeiro byte em hex, não o chunk todo
+      log("← resposta inesperada ao MS05 [" + ackBytes[0].toString(16).toUpperCase().padStart(2, "0") + "]", "R");
       verdict("resposta inesperada ao MS05 — leitor não armado", "bad");
       return;
+    } else {
+      log("← ACK - leitor armado, aguardando o cartao", "G");
+      verdict("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", "warn");
+      // A3: passa bytes após ACK se houver
+      inicial = [...ackBytes.slice(1)];
     }
-    log("← ACK - leitor armado, aguardando o cartao", "G");
-    verdict("PASSE O CARTÃO NA TRILHA AGORA (leitor armado · 90 s)", "warn");
+
     // 2) espera o evento espontaneo MS06 (o pinpad ignora comandos enquanto esta armado)
-    let frame = await esperarFrame("MS06", 90000);
+    // A3: passa inicial com bytes que já vieram (após o ACK ou vazio)
+    let frame = await esperarFrame("MS06", 90000, inicial);
     if (cancelar) return;                    // desconectou durante a espera
     if (!frame) {
       // nao usar coleta: o leitor segue armado e ignora comandos. Continua escutando.
       log("90 s sem cartão - o leitor CONTINUA armado, seguindo na escuta", "Y");
       verdict("leitor ainda armado — pode passar o cartão (escuta contínua por 3 min)", "warn");
-      frame = await esperarFrame("MS06", 180000);
+      frame = await esperarFrame("MS06", 180000, []);  // A3: reset inicial para segunda espera
       if (cancelar) return;
     }
     if (frame && frame.payload.length > 6) {
@@ -519,7 +556,8 @@ async function lerTarja() {
 /* ---------- chip ---------- */
 async function checarChip(silencioso = false) {
   const r = await comando("SC02", "0", undefined, 1500, "SC03");
-  if (!silencioso) $("rawResp").textContent = r.raw.length ? hex(r.raw) : "—";
+  // A2: só mostra hex se for SC03; senão mostra "—"
+  if (!silencioso) $("rawResp").textContent = (r.frame && r.frame.cmd === "SC03" && r.raw.length) ? hex(r.raw) : "—";
   let presente = null;
   if (r.frame && r.frame.cmd === "SC03") {
     const s = ascii(r.frame.payload);
@@ -598,8 +636,8 @@ async function testeCompleto() {
     while (performance.now() - t0 < 2000 && !cancelar) {
       const chunk = await rxChunk(150);
       if (chunk.length) bytes.push(...chunk);
-      const i = bytes.indexOf(STX);
-      if (i >= 0 && bytes.length >= i + 2 && bytes.length >= i + bytes[i + 1]) { frame = parseFrame(new Uint8Array(bytes.slice(i))); break; }
+      const achado = acharFrame(bytes);  // A10: usa acharFrame
+      if (achado) { frame = achado.frame; break; }
       if (bytes.length && bytes[0] !== ACK) break;
     }
     const ack = bytes.length ? bytes[0] : null;

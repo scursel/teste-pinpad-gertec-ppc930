@@ -1,5 +1,34 @@
 # Changelog
 
+## v1.2 — 2026-10-04
+
+Correções da segunda auditoria ([`docs/plans/2026-10-04-auditoria-v1.1.md`](docs/plans/2026-10-04-auditoria-v1.1.md)).
+
+### Segurança
+- **Número do cartão não vaza mais no log.** App Android: passar o cartão logo depois de tocar em
+  "Ler tarja" fazia o log mostrar as trilhas sem máscara. Página web: um cartão passado depois do
+  fim da espera aparecia em hex no log do comando seguinte. Agora nenhum programa registra bytes
+  brutos que possam ser do cartão.
+
+### Correções
+- Ler tarja: sem resposta ao `MS05` não é mais tratado como falha definitiva — o leitor pode já
+  estar armado de uma tentativa anterior (ele ignora um segundo `MS05`). O programa avisa e segue
+  esperando o cartão (web, Android, PowerShell).
+- App Android: "passe o cartão" só aparece depois que o pinpad confirma o `MS05`; bytes que chegam
+  junto com o ACK não se perdem.
+- App Android: o teste completo manda a linha do display no `MK10` (igual à web e ao PowerShell);
+  desconectar no meio do teste não sobrescreve mais o status.
+- PowerShell `-Info`: série, modelo e firmware voltam a sair separados.
+- PowerShell `-Tarja`: uma resposta atrasada na fila não impede mais de reconhecer o cartão.
+- PowerShell: a porta COM é sempre fechada, mesmo com erro; o texto do display é limpo (sem acento,
+  ASCII, 16 caracteres).
+- Página web: um `0x02` solto antes do frame não atrasa mais a leitura; a escolha manual do
+  transporte (serial/USB) é respeitada ao reconectar.
+
+### Atenção
+- O APK continua sendo publicado com a chave de **debug** do GitHub Actions enquanto os secrets
+  de assinatura não forem cadastrados — cada versão nova exige desinstalar a anterior.
+
 ## v1.1 — 2026-09-25
 
 Correções da auditoria do repositório (plano em [`docs/plans/2026-09-25-correcoes-auditoria.md`](docs/plans/2026-09-25-correcoes-auditoria.md)).
