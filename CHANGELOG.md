@@ -25,6 +25,14 @@ Correções da segunda auditoria ([`docs/plans/2026-10-04-auditoria-v1.1.md`](do
 - Página web: um `0x02` solto antes do frame não atrasa mais a leitura; a escolha manual do
   transporte (serial/USB) é respeitada ao reconectar.
 
+### Tela do app Android
+- Cartão grande no topo com o resultado da última ação em cores: **verde = passou**,
+  **vermelho = falhou**, **amarelo = parcial**, **azul = em andamento / sua vez** (ex.: "PASSE O
+  CARTÃO AGORA"), sempre com o que fazer em seguida.
+- Lista **Resultados** com o estado de cada parte (conexão, tarja, chip, display, identificação).
+- Botões agrupados em "1 · Conexão" e "2 · Testes"; o log técnico fica escondido em
+  "Mostrar detalhes técnicos".
+
 ### Atenção
 - O APK continua sendo publicado com a chave de **debug** do GitHub Actions enquanto os secrets
   de assinatura não forem cadastrados — cada versão nova exige desinstalar a anterior.
