@@ -11,8 +11,8 @@ android {
         applicationId = "br.com.scursel.pinpadppc930"
         minSdk = 21
         targetSdk = 34
-        versionCode = 2
-        versionName = "1.1"
+        versionCode = 3
+        versionName = "1.2"
     }
 
     // assinatura release: a chave fica FORA do repositorio. Defina as variaveis

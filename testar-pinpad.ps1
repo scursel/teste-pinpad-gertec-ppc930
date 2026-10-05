@@ -41,6 +41,26 @@ function Mascarar([string]$s) {
   if ($Completo) { return $s }
   return [regex]::Replace($s, '\d{13,}', { param($m) $v = $m.Value; $v.Substring(0,6) + ('*' * ($v.Length - 10)) + $v.Substring($v.Length - 4) })
 }
+function Limpar-Texto([string]$txt) {
+  # Remove acentos: decompoe em bases + diacriticos, depois remove diacriticos
+  $nfd = $txt.Normalize([Text.NormalizationForm]::FormD)
+  $result = ""
+  foreach ($c in $nfd.ToCharArray()) {
+    $cat = [Globalization.CharUnicodeInfo]::GetUnicodeCategory($c)
+    if ($cat -ne "NonSpacingMark") { $result += $c }
+  }
+  # Mantem apenas 0x20..0x7E (espacos e ASCII imprimiveis)
+  $filtered = ""
+  foreach ($c in $result.ToCharArray()) {
+    $code = [int][char]$c
+    if ($code -ge 0x20 -and $code -le 0x7E) { $filtered += $c }
+  }
+  # Corta em 16 caracteres
+  if ($filtered.Length -gt 16) { $filtered = $filtered.Substring(0, 16) }
+  # Se vazio, usa "PINPAD OK"
+  if ($filtered -eq "" -or $filtered -match "^\s+$") { $filtered = "PINPAD OK" }
+  return $filtered
+}
 
 function Read-Chunks($sp, $ms, [ref]$acc) {
   $sw = [Diagnostics.Stopwatch]::StartNew()
@@ -60,10 +80,11 @@ function Parse-Frame([byte[]]$bytes) {
     if ($i + $len -gt $bytes.Length) { break }
     $f = $bytes[$i..($i + $len - 1)]
     $x = 0; for ($k = 0; $k -lt $f.Length - 1; $k++) { $x = $x -bxor $f[$k] }
-    if ($x -ne $f[$f.Length - 1]) { return @{ cmd = ""; payload = @(); bad = $true } }
+    $fim = $i + $len
+    if ($x -ne $f[$f.Length - 1]) { return @{ cmd = ""; payload = @(); bad = $true; fim = $fim } }
     $cmd = [Text.Encoding]::ASCII.GetString($f[2..5])
     $payload = if ($len -gt 8) { $f[6..($len - 3)] } else { @() }
-    return @{ cmd = $cmd; payload = $payload; bad = $false }
+    return @{ cmd = $cmd; payload = $payload; bad = $false; fim = $fim }
   }
   return $null
 }
@@ -75,6 +96,8 @@ if ([System.IO.Ports.SerialPort]::GetPortNames() -notcontains $Port) {
 $sp = New-Object System.IO.Ports.SerialPort($Port, $Baud, [System.IO.Ports.Parity]::None, 8, [System.IO.Ports.StopBits]::One)
 $sp.ReadTimeout = 250; $sp.WriteTimeout = 250
 try { $sp.Open() } catch { Write-Host "Falha ao abrir $Port : $($_.Exception.Message)" -ForegroundColor Red; exit 1 }
+
+try {
 Start-Sleep -Milliseconds 900
 $sp.DiscardInBuffer()
 # warm-up (o primeiro comando depois de abrir costuma ser descartado)
@@ -95,13 +118,29 @@ if ($Info) {
   $r = Enviar "MT03" $null $null 2000
   $fr = Parse-Frame $r
   if ($fr -and $fr.cmd -eq "MT03") {
-    $campos = (Ascii $fr.payload) -split [char]$FSEP | Where-Object { $_ }
+    # Separar campos pelos bytes 0x1F primeiro, depois converter com Ascii
+    $camposRaw = @()
+    $cur = @()
+    foreach ($b in $fr.payload) {
+      if ($b -eq $FSEP) {
+        if ($cur.Count) { $camposRaw += , @([byte[]]$cur) }
+        $cur = @()
+      } else {
+        $cur += $b
+      }
+    }
+    if ($cur.Count) { $camposRaw += , @([byte[]]$cur) }
+    $campos = @()
+    foreach ($c in $camposRaw) {
+      $txt = (Ascii $c).Trim()
+      if ($txt) { $campos += $txt }
+    }
     Write-Host ("   serie=" + $campos[0] + "  modelo=" + $campos[1] + "  firmware=" + $campos[2]) -ForegroundColor Green
   } else { Write-Host "   sem resposta de identificacao" -ForegroundColor Yellow }
   $r = Enviar "PP03" $null $null 2000
   $fr = Parse-Frame $r
   if ($fr) { Write-Host ("   rtc=" + (Ascii $fr.payload).Replace("PP04","")) -ForegroundColor Green }
-  $sp.Close(); exit 0
+  exit 0
 }
 
 if ($Chip) {
@@ -113,7 +152,7 @@ if ($Chip) {
     else { Write-Host "RESULTADO: nenhum cartao de chip inserido" -ForegroundColor Yellow }
   } elseif ($r.Length -and $r[0] -eq $NAK) { Write-Host "RESULTADO: leitor de chip recusou o comando (NAK)" -ForegroundColor Red }
   else { Write-Host "RESULTADO: sem resposta do leitor de chip" -ForegroundColor Red }
-  $sp.Close(); exit 0
+  exit 0
 }
 
 if ($Tarja) {
@@ -121,16 +160,34 @@ if ($Tarja) {
   Write-Host ("-> MS05 (arma o leitor de tarja)  " + (Hex $f)) -ForegroundColor Cyan
   $sp.Write($f, 0, $f.Length)
   $acc = [System.Collections.Generic.List[byte]]::new(); Read-Chunks $sp 1500 ([ref]$acc)
-  if ($acc.Count -eq 0) { Write-Host "   sem resposta ao MS05 - leitor NAO armado (a aplicacao esta rodando?)" -ForegroundColor Red; $sp.Close(); exit 1 }
-  elseif ($acc[0] -eq $NAK) { Write-Host "   leitor recusou armar (NAK)" -ForegroundColor Red; $sp.Close(); exit 1 }
-  elseif ($acc[0] -ne $ACK) { Write-Host ("   resposta inesperada ao MS05: " + (Hex $acc.ToArray())) -ForegroundColor Red; $sp.Close(); exit 1 }
-  Write-Host "   leitor ARMADO - passe o cartao na trilha agora" -ForegroundColor Yellow
+  if ($acc.Count -eq 0) {
+    Write-Host "   sem resposta ao MS05 - o leitor pode ja estar armado de uma tentativa anterior; sigo escutando" -ForegroundColor Yellow
+  } elseif ($acc[0] -eq $NAK) {
+    Write-Host "   leitor recusou armar (NAK)" -ForegroundColor Red; exit 1
+  } elseif ($acc[0] -ne $ACK) {
+    Write-Host ("   resposta inesperada ao MS05: " + (Hex $acc.ToArray())) -ForegroundColor Red; exit 1
+  } else {
+    Write-Host "   leitor ARMADO - passe o cartao na trilha agora" -ForegroundColor Yellow
+  }
   $sw = [Diagnostics.Stopwatch]::StartNew()
   $buf = [System.Collections.Generic.List[byte]]::new()
+  # Se houver bytes apos ACK, coloca no buffer
+  if ($acc.Count -gt 1) { $buf.AddRange([byte[]]($acc.ToArray()[1..($acc.Count - 1)])) }
   $fr = $null
   while ($sw.ElapsedMilliseconds -lt ($Janela * 1000)) {
     $chunk = [System.Collections.Generic.List[byte]]::new(); Read-Chunks $sp 400 ([ref]$chunk)
-    if ($chunk.Count) { $buf.AddRange($chunk); $fr = Parse-Frame $buf.ToArray(); if ($fr -and $fr.cmd -eq "MS06") { break } }
+    if ($chunk.Count) { $buf.AddRange($chunk) }
+    # Tenta achar MS06
+    $fr = Parse-Frame $buf.ToArray()
+    if ($fr) {
+      if ($fr.cmd -eq "MS06") {
+        break
+      } else {
+        # Nao eh MS06: remove ate fim e tenta de novo
+        $buf.RemoveRange(0, $fr.fim)
+        $fr = $null
+      }
+    }
   }
   if ($fr -and $fr.cmd -eq "MS06" -and $fr.payload.Count -gt 6) {
     if ($Completo) {
@@ -149,11 +206,12 @@ if ($Tarja) {
   } else {
     Write-Host "RESULTADO: nenhum cartao passou durante a janela (o leitor continua armado)" -ForegroundColor Yellow
   }
-  $sp.Close(); exit 0
+  exit 0
 }
 
 # padrao: display + ACK
-$f = New-Frame "MK10" "2" $Texto
+$TextoLimpo = Limpar-Texto $Texto
+$f = New-Frame "MK10" "2" $TextoLimpo
 Write-Host ("-> MK10 (display)  " + (Hex $f)) -ForegroundColor Cyan
 $sp.Write($f, 0, $f.Length)
 $acc = [System.Collections.Generic.List[byte]]::new(); Read-Chunks $sp 2000 ([ref]$acc)
@@ -168,4 +226,7 @@ if ($ack -eq $ACK) {
 } else {
   Write-Host "RESULTADO: resposta inesperada." -ForegroundColor Yellow
 }
-$sp.Close()
+
+} finally {
+  if ($sp -and $sp.IsOpen) { $sp.Close() }
+}
